@@ -1,6 +1,6 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import { handleApiRequest, matchApiRoute, resolveApiPath } from './api/router.js'
+import { handleApiRequest, matchApiRoute, resolveApiPath } from './backend/router.js'
 
 function readRequestBody(req) {
   return new Promise((resolve, reject) => {

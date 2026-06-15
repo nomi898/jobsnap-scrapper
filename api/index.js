@@ -1,8 +1,12 @@
 import {
   checkCronSecret,
   checkSitePassword,
-} from './server/auth.js'
-import { handleApiRequest, matchApiRoute, resolveApiPath } from './router.js'
+} from '../backend/server/auth.js'
+import {
+  handleApiRequest,
+  matchApiRoute,
+  resolveApiPath,
+} from '../backend/router.js'
 
 function resolveRequestPath(req) {
   const queryPath = req.query?.path

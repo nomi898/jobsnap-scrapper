@@ -1,4 +1,4 @@
-import { createApp } from './api/server/createApp.js'
+import { createApp } from './backend/server/createApp.js'
 
 const port = Number(process.env.PORT) || 3000
 const app = createApp()
