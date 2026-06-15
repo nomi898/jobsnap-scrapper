@@ -1,0 +1,19 @@
+name: Morning Job Fetch
+
+on:
+  schedule:
+    - cron: '45 12 * * *'  # 5:45 PM PKT (UTC+5) - TEST
+  workflow_dispatch:         # manual trigger too
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger JobSnap Fetch
+        run: |
+          curl -X POST https://jobsnap-scrapper-c89360q1k-nauman-zahid-khans-projects.vercel.app/api/fetch-jobs \
+            -H "Content-Type: application/json" \
+            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
+            --max-time 900 \
+            --retry 3 \
+            --retry-delay 30
