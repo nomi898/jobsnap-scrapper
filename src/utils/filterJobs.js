@@ -106,26 +106,47 @@ function parsePostedDate(value) {
   return Number.isNaN(date.getTime()) ? null : date
 }
 
-function isWithinDisplayRange(postedDate, filter) {
-  if (filter === 'all') return true
-  const date = parsePostedDate(postedDate)
+function resolveJobPostedAt(job) {
+  const iso = String(job?.postedAtIso ?? job?.postedAt ?? '').trim()
+  if (/^\d{4}-\d{2}-\d{2}/.test(iso)) {
+    const parsed = new Date(iso)
+    if (!Number.isNaN(parsed.getTime())) return parsed
+  }
+
+  return parsePostedDate(job?.postedDate)
+}
+
+function isWithinDisplayRange(job, filter) {
+  if (!filter || filter === 'all') return true
+
+  const date = resolveJobPostedAt(job)
   if (!date) return true
 
   const now = new Date()
+
+  if (filter === '24h') {
+    return date.getTime() >= now.getTime() - 24 * 60 * 60 * 1000
+  }
+
   const startOfToday = new Date(
     now.getFullYear(),
     now.getMonth(),
     now.getDate()
   )
 
-  if (filter === 'today') {
+  if (filter === 'today' || filter === '1d') {
     return date >= startOfToday
   }
 
-  const days = filter === '3d' ? 3 : 7
-  const cutoff = new Date(startOfToday)
-  cutoff.setDate(cutoff.getDate() - (days - 1))
-  return date >= cutoff
+  const dayMatch = String(filter).match(/^(\d+)d$/)
+  if (dayMatch) {
+    const days = Number(dayMatch[1])
+    const cutoff = new Date(startOfToday)
+    cutoff.setDate(cutoff.getDate() - (days - 1))
+    return date >= cutoff
+  }
+
+  return true
 }
 
 function compareDates(a, b, direction) {
@@ -342,7 +363,7 @@ export function filterAndSortJobs(jobs, filters) {
     ) {
       return false
     }
-    if (!isWithinDisplayRange(job.postedDate, dateFilter)) {
+    if (!isWithinDisplayRange(job, dateFilter)) {
       return false
     }
     if (!matchesWorkTypeFilter(job, workType)) {

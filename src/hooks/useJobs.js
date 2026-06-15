@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { STORAGE_KEYS } from '../constants'
 import {
   dedupeJobs,
@@ -7,6 +7,7 @@ import {
   normalizeJob,
   parseKeywordList,
 } from '../utils/fetchJobs'
+import { applyServerSnapshot, loadJobsFromServer } from '../utils/serverSync'
 import { loadFromStorage, saveToStorage } from '../utils/storage'
 
 const DEFAULT_PAGINATION = { batchesLoaded: 0, hasMore: false }
@@ -62,6 +63,20 @@ export function useJobs() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const fetchInFlight = useRef(false)
+
+  useEffect(() => {
+    loadJobsFromServer().then((snapshot) => {
+      if (!snapshot) return
+      if (!applyServerSnapshot(snapshot)) return
+
+      setJobs(snapshot.jobs)
+      if (snapshot.lastFetched) setLastFetched(snapshot.lastFetched)
+      if (snapshot.fetchMeta) setFetchMeta(snapshot.fetchMeta)
+      if (snapshot.pagination) {
+        setPagination(repairPagination(snapshot.pagination, snapshot.jobs.length))
+      }
+    })
+  }, [])
 
   const persistJobs = useCallback((nextJobs) => {
     setJobs(nextJobs)
@@ -174,7 +189,11 @@ export function useJobs() {
       })
 
       try {
-        const result = await fetchJobsFromScraper(settings, startPage)
+        const result = await fetchJobsFromScraper(
+          settings,
+          startPage,
+          append ? fetchMeta : null
+        )
         applyFetchResult(result, {
           append,
           startPage,
@@ -224,6 +243,7 @@ export function useJobs() {
     },
     [
       applyFetchResult,
+      fetchMeta,
       jobs,
       persistJobs,
       persistPagination,

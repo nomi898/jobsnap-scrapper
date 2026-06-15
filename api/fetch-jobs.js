@@ -1,3 +1,4 @@
+// Throttling + pagination live in scrapeJobs.js (called below).
 import { resolveRequestLiAtCookie } from './linkedinHttp.js'
 import { scrapeJobs } from './scrapeJobs.js'
 
@@ -11,8 +12,8 @@ export default async function handler(req, res) {
   const session = resolveRequestLiAtCookie(body.liAtCookie)
   const { status, data } = await scrapeJobs({
     keywords: body.keywords,
-    pagesPerKeyword: body.pagesPerKeyword,
     startPage: body.startPage,
+    startOffset: body.startOffset,
     dateFilter: body.dateFilter,
     geoId: body.geoId ?? '92000000',
     workTypeFilter: body.workTypeFilter ?? 'all',

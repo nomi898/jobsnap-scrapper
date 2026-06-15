@@ -121,8 +121,8 @@ function scraperApiPlugin() {
           const session = resolveRequestLiAtCookie(body.liAtCookie)
           const { status, data } = await scrapeJobs({
             keywords: body.keywords,
-            pagesPerKeyword: body.pagesPerKeyword,
             startPage: body.startPage,
+            startOffset: body.startOffset,
             dateFilter: body.dateFilter,
             geoId: body.geoId ?? '92000000',
             workTypeFilter: body.workTypeFilter ?? 'all',

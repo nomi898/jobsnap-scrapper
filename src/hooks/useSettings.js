@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react'
 import { DEFAULT_SETTINGS, STORAGE_KEYS } from '../constants'
 import { loadFromStorage, saveToStorage } from '../utils/storage'
 import { parseKeywordList } from '../utils/fetchJobs'
+import { syncSettingsToServer } from '../utils/serverSync'
 
 export function useSettings() {
   const [settings, setSettings] = useState(() => {
@@ -19,6 +20,7 @@ export function useSettings() {
   const saveSettings = useCallback((nextSettings) => {
     setSettings(nextSettings)
     saveToStorage(STORAGE_KEYS.settings, nextSettings)
+    syncSettingsToServer(nextSettings)
   }, [])
 
   const isConfigured = parseKeywordList(settings.keywords).length > 0

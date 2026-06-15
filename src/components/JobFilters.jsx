@@ -32,7 +32,7 @@ export default function JobFilters({
         </label>
 
         <label className="field">
-          <span>Date</span>
+          <span>Posted</span>
           <select
             value={filters.dateFilter}
             onChange={(e) => onChange({ dateFilter: e.target.value })}

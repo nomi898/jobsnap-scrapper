@@ -5,15 +5,35 @@ import {
 import { enrichJobsWithCompanySize } from './companySize.js'
 import { LINKEDIN_ACCESS, resolveRequestLiAtCookie } from './linkedinHttp.js'
 import {
+  KEYWORD_COOLDOWN_EVERY,
+  KEYWORD_COOLDOWN_MAX_MS,
+  KEYWORD_COOLDOWN_MIN_MS,
+  KEYWORD_DELAY_MAX_MS,
+  KEYWORD_DELAY_MIN_MS,
   KEYWORD_FINAL_RETRY_DELAY_MS,
   KEYWORD_MAX_RETRIES,
   KEYWORD_RETRY_DELAY_MS,
-  KEYWORD_STAGGER_MS,
 } from '../src/constants.js'
 import { normalizeSearchKeyword } from '../src/utils/keywords.js'
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function randomBetween(min, max) {
+  return min + Math.floor(Math.random() * (max - min + 1))
+}
+
+async function sleepRandom(min, max) {
+  await sleep(randomBetween(min, max))
+}
+
+async function delayBeforeKeyword(index) {
+  if (index <= 0) return
+  await sleepRandom(KEYWORD_DELAY_MIN_MS, KEYWORD_DELAY_MAX_MS)
+  if (index % KEYWORD_COOLDOWN_EVERY === 0) {
+    await sleepRandom(KEYWORD_COOLDOWN_MIN_MS, KEYWORD_COOLDOWN_MAX_MS)
+  }
 }
 
 function shouldRetryKeyword(result) {
@@ -38,8 +58,7 @@ async function scrapeKeywordWithRetry(options) {
 
 async function scrapeSingleKeyword({
   keyword,
-  pages,
-  startPage,
+  startOffset,
   dateFilter,
   geoId,
   workTypeFilter,
@@ -48,8 +67,7 @@ async function scrapeSingleKeyword({
   const normalizedKeyword = normalizeSearchKeyword(keyword)
   const options = {
     keyword: normalizedKeyword,
-    pagesPerKeyword: pages,
-    startPage,
+    startOffset,
     dateFilter,
     geoId,
     workTypeFilter,
@@ -66,7 +84,6 @@ async function scrapeSingleKeyword({
 function buildResponse({
   jobs,
   keywords,
-  pagesPerKeyword,
   startPage,
   rateLimited,
   pagesRequested,
@@ -77,6 +94,7 @@ function buildResponse({
   sessionSource = 'none',
   cookieRejected = false,
   companyEnrichment = null,
+  nextStartOffset = 0,
 }) {
   const deduped = dedupeJobs(jobs)
   const isRateLimited = rateLimited && deduped.length === 0
@@ -93,10 +111,11 @@ function buildResponse({
     nextStartPage: (Number(startPage) || 1) + 1,
     meta: {
       pagesRequested,
-      pagesPerKeyword,
+      paginationMode: 'until-empty',
       keywords,
       keywordResults,
       batch: Number(startPage) || 1,
+      nextStartOffset,
       rateLimitedPages,
       accessMode,
       sessionSource,
@@ -132,8 +151,8 @@ function mergeKeywordResult(
 
 export async function scrapeJobs({
   keywords = [],
-  pagesPerKeyword = 3,
   startPage = 1,
+  startOffset,
   dateFilter = '7d',
   geoId = '92000000',
   workTypeFilter = 'all',
@@ -154,37 +173,34 @@ export async function scrapeJobs({
     return { status: 400, data: { error: 'At least one keyword is required' } }
   }
 
-  const pages = Math.min(Math.max(1, Number(pagesPerKeyword) || 3), 50)
   const allJobs = []
   const keywordResults = []
   const rateLimitedPagesRef = { value: 0 }
   const accessModeRef = { value: LINKEDIN_ACCESS.guest }
   const sessionSourceRef = { value: session.source }
   const cookieRejectedRef = { value: false }
+  let totalPagesFetched = 0
+  const resumeOffset = Number(startOffset) || 0
+  let nextStartOffset = resumeOffset
   let scrapeError = null
 
-  const sharedOptions = {
-    pages,
-    startPage,
-    dateFilter,
-    geoId,
-    workTypeFilter,
-    liAtCookie: resolvedCookie,
-  }
+  for (let index = 0; index < keywordList.length; index += 1) {
+    await delayBeforeKeyword(index)
 
-  const entries = await Promise.all(
-    keywordList.map(async (keyword, index) => {
-      if (index > 0) {
-        await sleep(KEYWORD_STAGGER_MS)
-      }
-      return scrapeSingleKeyword({
-        keyword,
-        ...sharedOptions,
-      })
+    const entry = await scrapeSingleKeyword({
+      keyword: keywordList[index],
+      startOffset: index === 0 ? resumeOffset : 0,
+      dateFilter,
+      geoId,
+      workTypeFilter,
+      liAtCookie: resolvedCookie,
     })
-  )
 
-  for (const entry of entries) {
+    totalPagesFetched += entry.result.pagesFetched ?? 0
+    if (index === 0) {
+      nextStartOffset = entry.result.nextStartOffset ?? nextStartOffset
+    }
+
     mergeKeywordResult(
       allJobs,
       keywordResults,
@@ -206,16 +222,17 @@ export async function scrapeJobs({
   if (failedKeywords.length > 0 && failedKeywords.length < keywordList.length) {
     await sleep(KEYWORD_FINAL_RETRY_DELAY_MS)
 
-    const retryEntries = await Promise.all(
-      failedKeywords.map((keyword) =>
-        scrapeSingleKeyword({
-          keyword,
-          ...sharedOptions,
-        })
-      )
-    )
-
-    for (const entry of retryEntries) {
+    for (const keyword of failedKeywords) {
+      await sleepRandom(KEYWORD_DELAY_MIN_MS, KEYWORD_DELAY_MAX_MS)
+      const entry = await scrapeSingleKeyword({
+        keyword,
+        startOffset: 0,
+        dateFilter,
+        geoId,
+        workTypeFilter,
+        liAtCookie: resolvedCookie,
+      })
+      totalPagesFetched += entry.result.pagesFetched ?? 0
       allJobs.push(...entry.result.jobs)
       rateLimitedPagesRef.value += entry.result.rateLimitedPages
     }
@@ -271,10 +288,9 @@ export async function scrapeJobs({
   const response = buildResponse({
     jobs,
     keywords: keywordList,
-    pagesPerKeyword: pages,
     startPage,
     rateLimited,
-    pagesRequested: keywordList.length * pages,
+    pagesRequested: totalPagesFetched,
     rateLimitedPages: rateLimitedPagesRef.value,
     keywordResults: mergedKeywordResults,
     exhausted: allKeywordsExhausted,
@@ -282,6 +298,7 @@ export async function scrapeJobs({
     sessionSource: sessionSourceRef.value,
     cookieRejected: cookieRejectedRef.value,
     companyEnrichment,
+    nextStartOffset,
   })
 
   const stillFailed = response.meta.keywordResults

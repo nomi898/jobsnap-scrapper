@@ -1,5 +1,11 @@
 import * as cheerio from 'cheerio'
-import { LINKEDIN_WORK_TYPE } from '../src/constants.js'
+import {
+  LINKEDIN_DATE_FILTERS,
+  LINKEDIN_WORK_TYPE,
+  PAGE_DELAY_MAX_MS,
+  PAGE_DELAY_MIN_MS,
+  SAFETY_MAX_PAGES,
+} from '../src/constants.js'
 import {
   extractCompanyId,
   parseLocationParts,
@@ -40,16 +46,9 @@ const EXCLUDED_LOCATIONS = [
   'jakarta',
 ]
 
-const DATE_FILTER_MAP = {
-  '1d': 'r86400',
-  '3d': 'r259200',
-  '7d': 'r604800',
-  '30d': 'r2592000',
-  all: '',
-}
+const DATE_FILTER_MAP = LINKEDIN_DATE_FILTERS
 
 export const JOBS_PER_PAGE = 10
-export const PAGE_DELAY_MS = 500
 const REQUEST_TIMEOUT_MS = 20000
 const MIN_HTML_LENGTH = 1000
 const FETCH_RETRIES = 2
@@ -58,6 +57,14 @@ const GUEST_JOBS_API_URL =
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function randomBetween(min, max) {
+  return min + Math.floor(Math.random() * (max - min + 1))
+}
+
+async function sleepRandom(min, max) {
+  await sleep(randomBetween(min, max))
 }
 
 function cleanText(value) {
@@ -294,26 +301,22 @@ export function parseJobsFromHtml(html, keyword) {
 
 export async function scrapeKeywordPages({
   keyword,
-  pagesPerKeyword,
-  startPage,
+  startOffset = 0,
   dateFilter,
   geoId,
   workTypeFilter,
-  liAtCookie,
-  pageDelayMs = PAGE_DELAY_MS,
 }) {
-  const batchIndex = Math.max(0, (Number(startPage) || 1) - 1)
+  let start = Number(startOffset) || 0
   const jobs = []
   let rateLimitedPages = 0
   let lastError = null
-  let lastPageJobCount = 0
   let pagesFetched = 0
   let hitEndOfResults = false
   let accessMode
   let cookieRejected = false
+  let duplicatePage = false
 
-  for (let page = 0; page < pagesPerKeyword; page += 1) {
-    const start = (batchIndex * pagesPerKeyword + page) * JOBS_PER_PAGE
+  while (pagesFetched < SAFETY_MAX_PAGES) {
     const url = buildSearchUrl({
       keyword,
       geoId,
@@ -345,35 +348,49 @@ export async function scrapeKeywordPages({
     }
 
     if (isEmptyResponseHtml(html)) {
-      rateLimitedPages += 1
-      if (jobs.length === 0) {
-        lastError = 'LinkedIn returned an empty search page'
+      if (pagesFetched > 0) {
+        hitEndOfResults = true
+        break
       }
+      rateLimitedPages += 1
+      lastError = 'LinkedIn returned an empty search page'
       break
     }
 
     const pageJobs = parseJobsFromHtml(html, keyword)
-    lastPageJobCount = pageJobs.length
 
     if (pageJobs.length === 0) {
       hitEndOfResults = true
       break
     }
 
-    pagesFetched += 1
-    jobs.push(...pageJobs)
-
-    if (page < pagesPerKeyword - 1) {
-      await sleep(pageDelayMs)
+    const newJobs = pageJobs.filter(
+      (job) => !jobs.some((existing) => existing.link === job.link)
+    )
+    if (pagesFetched > 0 && newJobs.length === 0) {
+      duplicatePage = true
+      hitEndOfResults = true
+      break
     }
+
+    pagesFetched += 1
+    jobs.push(...newJobs)
+    start += JOBS_PER_PAGE
+
+    await sleepRandom(PAGE_DELAY_MIN_MS, PAGE_DELAY_MAX_MS)
   }
 
-  const exhausted = rateLimitedPages === 0 && pagesFetched > 0 && hitEndOfResults
+  const exhausted =
+    hitEndOfResults ||
+    duplicatePage ||
+    (pagesFetched >= SAFETY_MAX_PAGES && pagesFetched > 0)
 
   return {
     jobs,
     rateLimited: rateLimitedPages > 0,
     rateLimitedPages,
+    pagesFetched,
+    nextStartOffset: start,
     exhausted,
     error: jobs.length === 0 ? lastError : null,
     accessMode,

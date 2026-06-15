@@ -9,6 +9,18 @@ export const STORAGE_KEYS = {
 
 export const MAX_PAGES_PER_KEYWORD = 50
 export const DEFAULT_PAGES_PER_KEYWORD = 3
+/** Hard stop only — prevents infinite loops; normal exit is empty LinkedIn page */
+export const SAFETY_MAX_PAGES = 500
+/** Throttle: random delay between search pages (ms) */
+export const PAGE_DELAY_MIN_MS = 1500
+export const PAGE_DELAY_MAX_MS = 2500
+/** Throttle: random delay between keywords (ms) */
+export const KEYWORD_DELAY_MIN_MS = 2000
+export const KEYWORD_DELAY_MAX_MS = 4000
+/** Throttle: extra cooldown every Nth keyword (ms) */
+export const KEYWORD_COOLDOWN_MIN_MS = 12000
+export const KEYWORD_COOLDOWN_MAX_MS = 18000
+export const KEYWORD_COOLDOWN_EVERY = 3
 export const KEYWORD_STAGGER_MS = 1200
 export const KEYWORD_RETRY_DELAY_MS = 3000
 export const KEYWORD_MAX_RETRIES = 1
@@ -100,8 +112,18 @@ export function getRegionLabel(settings) {
   return preset?.label ?? `Custom (${geoId})`
 }
 
+/** LinkedIn search URL f_TPR values (seconds). */
+export const LINKEDIN_DATE_FILTERS = {
+  '24h': 'r86400',
+  '1d': 'r86400',
+  '3d': 'r259200',
+  '7d': 'r604800',
+  '30d': 'r2592000',
+  all: '',
+}
+
 export const SCRAPE_DATE_OPTIONS = [
-  { value: '1d', label: 'Last 24 hours' },
+  { value: '24h', label: 'Last 24 hours' },
   { value: '3d', label: 'Last 3 days' },
   { value: '7d', label: 'Last 7 days' },
   { value: '30d', label: 'Last 30 days' },
@@ -109,10 +131,15 @@ export const SCRAPE_DATE_OPTIONS = [
 ]
 
 export const DISPLAY_DATE_OPTIONS = [
-  { value: 'today', label: 'Today' },
-  { value: '3d', label: 'Last 3 days' },
-  { value: '7d', label: 'Last 7 days' },
   { value: 'all', label: 'All' },
+  { value: '24h', label: 'Last 24 hours' },
+  { value: '1d', label: 'Last 1 day' },
+  { value: '2d', label: 'Last 2 days' },
+  { value: '3d', label: 'Last 3 days' },
+  { value: '5d', label: 'Last 5 days' },
+  { value: '7d', label: 'Last 7 days' },
+  { value: '14d', label: 'Last 14 days' },
+  { value: '30d', label: 'Last 30 days' },
 ]
 
 export const SORT_OPTIONS = [

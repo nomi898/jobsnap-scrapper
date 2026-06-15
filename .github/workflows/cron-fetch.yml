@@ -1,0 +1,19 @@
+name: Cron fetch jobs
+
+on:
+  schedule:
+    # 07:00 UTC daily — change to match your timezone (e.g. 12:00 UTC ≈ 7 AM EST)
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger server scrape
+        run: |
+          curl -fsS -X POST "${APP_URL}/api/cron/fetch-jobs" \
+            -H "x-cron-secret: ${CRON_SECRET}"
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}

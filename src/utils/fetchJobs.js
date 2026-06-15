@@ -1,9 +1,4 @@
-import {
-  DEFAULT_PAGES_PER_KEYWORD,
-  LINKEDIN_RATE_LIMIT_ERROR,
-  MAX_PAGES_PER_KEYWORD,
-  resolveGeoId,
-} from '../constants'
+import { LINKEDIN_RATE_LIMIT_ERROR, resolveGeoId } from '../constants'
 import { cleanLinkedInUrl, resolveJobUrl } from './cleanJobFields'
 import { normalizeLiAtCookie } from './linkedinCookie'
 import { formatScrapeError } from './scrapeErrors'
@@ -22,15 +17,16 @@ function extractJobsFromResponse(data) {
   return []
 }
 
-function buildScrapePayload(settings, keywords, startPage) {
+function buildScrapePayload(settings, keywords, startPage, fetchMeta) {
   const cookie = normalizeLiAtCookie(settings.liAtCookie)
   return {
     keywords,
-    pagesPerKeyword: Math.min(
-      Number(settings.pagesPerKeyword) || DEFAULT_PAGES_PER_KEYWORD,
-      MAX_PAGES_PER_KEYWORD
-    ),
     startPage,
+    append: startPage > 1,
+    settings,
+    ...(startPage > 1 && fetchMeta?.nextStartOffset != null
+      ? { startOffset: fetchMeta.nextStartOffset }
+      : {}),
     dateFilter: settings.scrapeDateFilter,
     geoId: resolveGeoId(settings),
     workTypeFilter: settings.workTypeFilter ?? 'all',
@@ -39,8 +35,8 @@ function buildScrapePayload(settings, keywords, startPage) {
   }
 }
 
-async function fetchKeywordBatch(settings, keywords, startPage) {
-  const payload = buildScrapePayload(settings, keywords, startPage)
+async function fetchKeywordBatch(settings, keywords, startPage, fetchMeta = null) {
+  const payload = buildScrapePayload(settings, keywords, startPage, fetchMeta)
 
   let response
   try {
@@ -81,13 +77,13 @@ async function fetchKeywordBatch(settings, keywords, startPage) {
   }
 }
 
-export async function fetchJobsFromScraper(settings, startPage = 1) {
+export async function fetchJobsFromScraper(settings, startPage = 1, fetchMeta = null) {
   const keywords = parseKeywordList(settings.keywords)
   if (keywords.length === 0) {
     throw new Error('Add at least one keyword in Settings.')
   }
 
-  return fetchKeywordBatch(settings, keywords, startPage)
+  return fetchKeywordBatch(settings, keywords, startPage, fetchMeta)
 }
 
 export function mergeCompanySizes(existingJobs, enrichedJobs) {

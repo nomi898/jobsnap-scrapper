@@ -44,6 +44,22 @@ Open http://localhost:5173, configure keywords in **Settings**, then click **Fet
 | Scrape date range | How far back to search |
 | li_at cookie | Optional LinkedIn session cookie |
 
+## Deployment (self-host)
+
+```bash
+npm install
+npm run build
+cp .env.example .env   # set SITE_PASSWORD, CRON_SECRET, optional LI_AT_COOKIE
+npm start              # serves dist + API on PORT (default 3000)
+```
+
+- **`SITE_PASSWORD`** — optional HTTP basic auth for the whole site
+- **`CRON_SECRET`** — required for `POST /api/cron/fetch-jobs` (header `x-cron-secret`)
+- **`DATA_DIR`** — persistent path for shared jobs (mount a disk on Render/Railway)
+- **Cron** — use `.github/workflows/cron-fetch.yml` with secrets `APP_URL` + `CRON_SECRET`
+
+Save **Settings** once on the server so cron uses your keywords and scrape date range.
+
 ## Deployment note
 
 The scraper fetches public LinkedIn search pages over HTTP. Run locally or self-host with Node.js. Heavy rate limiting may still require waiting between fetches or setting an optional `li_at` cookie.

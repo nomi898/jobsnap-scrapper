@@ -151,7 +151,7 @@ export default function Settings() {
             onChange={(e) => updateField('pagesPerKeyword', e.target.value)}
           />
           <small className="hint">
-            Default 3 max 50 more pages means more jobs and more rate limits.
+            Ignored — fetch auto-paginates until LinkedIn has no more results.
           </small>
         </label>
 
@@ -201,7 +201,8 @@ export default function Settings() {
             ))}
           </select>
           <small className="hint">
-            How far back the LinkedIn scraper should search.
+            Controls LinkedIn search window (f_TPR). Last 24 hours is fastest — good for
+            daily fetches.
           </small>
         </label>
 
