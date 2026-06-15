@@ -1,8 +1,8 @@
-import { enrichJobsWithCompanySize } from '../companySize.js'
-import { fetchJobAndCompanyDetails } from '../fetch-job-details.js'
-import { getLinkedInAccessInfo } from '../linkedin-access.js'
-import { resolveRequestLiAtCookie } from '../linkedinHttp.js'
-import { scrapeJobs } from '../scrapeJobs.js'
+import { enrichJobsWithCompanySize } from '../lib/scrape/companySize.js'
+import { fetchJobAndCompanyDetails } from '../lib/details/fetch.js'
+import { getLinkedInAccessInfo } from '../lib/linkedin/access.js'
+import { resolveRequestLiAtCookie } from '../lib/linkedin/http.js'
+import { scrapeJobs } from '../lib/scrape/jobs.js'
 import { parseKeywordList } from '../../src/utils/keywords.js'
 import { resolveGeoId } from '../../src/constants.js'
 import {

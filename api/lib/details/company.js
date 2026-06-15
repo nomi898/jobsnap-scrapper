@@ -1,12 +1,12 @@
 import * as cheerio from 'cheerio'
-import { cleanLinkedInUrl } from './linkedinHtmlScraper.js'
-import { parseCompanySizeFromHtml } from './companySize.js'
+import { cleanLinkedInUrl } from '../scrape/html.js'
+import { parseCompanySizeFromHtml } from '../scrape/companySize.js'
 import {
   fetchLinkedInPage,
   isBlockedLinkedInResponse,
   resolveLinkedInSession,
-} from './linkedinHttp.js'
-import { extractCompanyId } from '../src/utils/jobSchema.js'
+} from '../linkedin/http.js'
+import { extractCompanyId } from '../../../src/utils/jobSchema.js'
 
 const REQUEST_TIMEOUT_MS = 15000
 

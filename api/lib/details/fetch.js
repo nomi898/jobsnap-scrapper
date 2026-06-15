@@ -1,8 +1,7 @@
-import { fetchCompanyDetails } from './companyDetails.js'
-import { fetchJobDetails } from './jobDetails.js'
-import { cleanLinkedInUrl } from './linkedinHtmlScraper.js'
-import { resolveRequestLiAtCookie } from './linkedinHttp.js'
-import { mergeToApifyJob } from '../src/utils/jobSchema.js'
+import { fetchCompanyDetails } from './company.js'
+import { fetchJobDetails } from './job.js'
+import { cleanLinkedInUrl } from '../scrape/html.js'
+import { mergeToApifyJob } from '../../../src/utils/jobSchema.js'
 
 export async function fetchJobAndCompanyDetails({
   jobUrl,
@@ -62,21 +61,4 @@ export async function fetchJobAndCompanyDetails({
       accessMode: jobResult.accessMode,
     },
   }
-}
-
-export default async function handler(req, res) {
-  if (req.method !== 'POST') {
-    res.status(405).json({ error: 'Method not allowed' })
-    return
-  }
-
-  const body = req.body ?? {}
-  const session = resolveRequestLiAtCookie(body.liAtCookie)
-  const { status, data } = await fetchJobAndCompanyDetails({
-    jobUrl: body.jobUrl ?? body.url,
-    companyUrl: body.companyUrl,
-    liAtCookie: session.cookie,
-  })
-
-  res.status(status).json(data)
 }

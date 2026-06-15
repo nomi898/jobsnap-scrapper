@@ -1,6 +1,6 @@
 import fs from 'fs/promises'
 import path from 'path'
-import { dedupeJobs } from '../linkedinHtmlScraper.js'
+import { dedupeJobs } from '../lib/scrape/html.js'
 import { DEFAULT_SETTINGS } from '../../src/constants.js'
 
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), 'data')

@@ -1,10 +1,34 @@
 export function requireCronSecret(req, res, next) {
+  const result = checkCronSecret(req)
+  if (!result.ok) {
+    res.status(result.status).json(result.data)
+    return
+  }
+  next()
+}
+
+export function requireSitePassword(req, res, next) {
+  const result = checkSitePassword(req)
+  if (!result.ok) {
+    if (result.wwwAuthenticate) {
+      res.setHeader('WWW-Authenticate', result.wwwAuthenticate)
+    }
+    res.status(result.status).send(result.data)
+    return
+  }
+  next()
+}
+
+export function checkCronSecret(req) {
   const secret = String(process.env.CRON_SECRET ?? '').trim()
   if (!secret) {
-    res.status(503).json({
-      error: 'CRON_SECRET is not configured on the server',
-    })
-    return
+    return {
+      ok: false,
+      status: 503,
+      data: {
+        error: 'CRON_SECRET is not configured on the server',
+      },
+    }
   }
 
   const header =
@@ -12,18 +36,16 @@ export function requireCronSecret(req, res, next) {
     String(req.headers.authorization ?? '').replace(/^Bearer\s+/i, '').trim()
 
   if (header !== secret) {
-    res.status(401).json({ error: 'Invalid cron secret' })
-    return
+    return { ok: false, status: 401, data: { error: 'Invalid cron secret' } }
   }
 
-  next()
+  return { ok: true }
 }
 
-export function requireSitePassword(req, res, next) {
+export function checkSitePassword(req) {
   const password = String(process.env.SITE_PASSWORD ?? '').trim()
   if (!password) {
-    next()
-    return
+    return { ok: true }
   }
 
   const header = String(req.headers.authorization ?? '')
@@ -32,14 +54,17 @@ export function requireSitePassword(req, res, next) {
       const decoded = Buffer.from(header.slice(6), 'base64').toString('utf8')
       const supplied = decoded.includes(':') ? decoded.split(':').slice(1).join(':') : decoded
       if (supplied === password) {
-        next()
-        return
+        return { ok: true }
       }
     } catch {
       // fall through to 401
     }
   }
 
-  res.setHeader('WWW-Authenticate', 'Basic realm="JobSnap"')
-  res.status(401).send('Authentication required')
+  return {
+    ok: false,
+    status: 401,
+    data: 'Authentication required',
+    wwwAuthenticate: 'Basic realm="JobSnap"',
+  }
 }

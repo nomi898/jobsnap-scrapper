@@ -1,9 +1,9 @@
 import {
   dedupeJobs,
   scrapeKeywordPages,
-} from './linkedinHtmlScraper.js'
+} from './html.js'
 import { enrichJobsWithCompanySize } from './companySize.js'
-import { LINKEDIN_ACCESS, resolveRequestLiAtCookie } from './linkedinHttp.js'
+import { LINKEDIN_ACCESS, resolveRequestLiAtCookie } from '../linkedin/http.js'
 import {
   KEYWORD_COOLDOWN_EVERY,
   KEYWORD_COOLDOWN_MAX_MS,
@@ -13,8 +13,8 @@ import {
   KEYWORD_FINAL_RETRY_DELAY_MS,
   KEYWORD_MAX_RETRIES,
   KEYWORD_RETRY_DELAY_MS,
-} from '../src/constants.js'
-import { normalizeSearchKeyword } from '../src/utils/keywords.js'
+} from '../../../src/constants.js'
+import { normalizeSearchKeyword } from '../../../src/utils/keywords.js'
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))

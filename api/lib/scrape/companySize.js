@@ -1,9 +1,9 @@
-import { cleanLinkedInUrl } from './linkedinHtmlScraper.js'
+import { cleanLinkedInUrl } from './html.js'
 import {
   fetchLinkedInPage,
   isBlockedLinkedInResponse,
   resolveLinkedInSession,
-} from './linkedinHttp.js'
+} from '../linkedin/http.js'
 
 const REQUEST_TIMEOUT_MS = 15000
 const COMPANY_FETCH_CONCURRENCY = 4

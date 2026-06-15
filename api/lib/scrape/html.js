@@ -5,13 +5,13 @@ import {
   PAGE_DELAY_MAX_MS,
   PAGE_DELAY_MIN_MS,
   SAFETY_MAX_PAGES,
-} from '../src/constants.js'
+} from '../../../src/constants.js'
 import {
   extractCompanyId,
   parseLocationParts,
   toRemoteBoolean,
-} from '../src/utils/jobSchema.js'
-import { fetchLinkedInPage, isBlockedLinkedInResponse } from './linkedinHttp.js'
+} from '../../../src/utils/jobSchema.js'
+import { fetchLinkedInPage, isBlockedLinkedInResponse } from '../linkedin/http.js'
 
 const EXCLUDED_LOCATIONS = [
   'india',

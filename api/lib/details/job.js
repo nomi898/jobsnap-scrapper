@@ -1,14 +1,14 @@
 import * as cheerio from 'cheerio'
-import { cleanLinkedInUrl } from './linkedinHtmlScraper.js'
+import { cleanLinkedInUrl } from '../scrape/html.js'
 import {
   fetchLinkedInPage,
   isBlockedLinkedInResponse,
-} from './linkedinHttp.js'
+} from '../linkedin/http.js'
 import {
   normalizeExperienceLevel,
   parseDescriptionExtras,
   parseJobPostingJsonLd,
-} from '../src/utils/jobSchema.js'
+} from '../../../src/utils/jobSchema.js'
 
 const GUEST_JOB_POSTING_URL =
   'https://www.linkedin.com/jobs-guest/jobs/api/jobPosting'
