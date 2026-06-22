@@ -122,45 +122,47 @@ export default function JobFilters({
         </label>
       </div>
 
-      <div className="filters-toggles">
-        <label className="filter-toggle">
-          <input
-            type="checkbox"
-            checked={Boolean(filters.hideViewed)}
-            onChange={(e) => onChange({ hideViewed: e.target.checked })}
-          />
-          <span>Hide viewed</span>
-        </label>
+      <div className="filters-footer">
+        <div className="filters-toggles">
+          <label className="filter-toggle">
+            <input
+              type="checkbox"
+              checked={Boolean(filters.hideViewed)}
+              onChange={(e) => onChange({ hideViewed: e.target.checked })}
+            />
+            <span>Hide viewed</span>
+          </label>
 
-        <label className="filter-toggle">
-          <input
-            type="checkbox"
-            checked={Boolean(filters.hideApplied)}
-            onChange={(e) => onChange({ hideApplied: e.target.checked })}
-          />
-          <span>Hide interacted</span>
-        </label>
+          <label className="filter-toggle">
+            <input
+              type="checkbox"
+              checked={Boolean(filters.hideApplied)}
+              onChange={(e) => onChange({ hideApplied: e.target.checked })}
+            />
+            <span>Hide interacted</span>
+          </label>
 
-        <label className="filter-toggle">
-          <input
-            type="checkbox"
-            checked={Boolean(filters.hideDuplicateTitleCompany)}
-            onChange={(e) =>
-              onChange({ hideDuplicateTitleCompany: e.target.checked })
-            }
-          />
-          <span>Hide multi location duplicates</span>
-        </label>
+          <label className="filter-toggle">
+            <input
+              type="checkbox"
+              checked={Boolean(filters.hideDuplicateTitleCompany)}
+              onChange={(e) =>
+                onChange({ hideDuplicateTitleCompany: e.target.checked })
+              }
+            />
+            <span>Hide multi location duplicates</span>
+          </label>
+        </div>
+
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          onClick={onClear}
+          disabled={!hasActiveFilters}
+        >
+          Clear filters
+        </button>
       </div>
-
-      <button
-        type="button"
-        className="btn btn-ghost btn-sm"
-        onClick={onClear}
-        disabled={!hasActiveFilters}
-      >
-        Clear filters
-      </button>
     </section>
   )
 }

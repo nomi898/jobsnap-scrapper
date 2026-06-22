@@ -1,15 +1,35 @@
 import { useCallback, useRef, useState } from 'react'
 import { STORAGE_KEYS } from '../constants'
+import { getJobCompanySizeRange } from '../utils/companySize'
 import {
+  clearActiveScrapeRunLock,
   dedupeJobs,
+  enrichJobsCompanySize,
   fetchJobsFromScraper,
   mergeJobWithFetchedDetails,
   normalizeJob,
   parseKeywordList,
 } from '../utils/fetchJobs'
+import { filterJobsByScrapeRange } from '../utils/filterJobs'
 import { loadFromStorage, saveToStorage } from '../utils/storage'
 
 const DEFAULT_PAGINATION = { batchesLoaded: 0, hasMore: false }
+
+function isAbortError(err) {
+  return err?.name === 'AbortError'
+}
+
+function isInformationalScrapeWarning(message) {
+  return (
+    /stopped after \d+ pages with no new matching title results/i.test(
+      String(message ?? '')
+    ) && !/rate.?limit|blocked|failed|error/i.test(String(message ?? ''))
+  )
+}
+
+function jobNeedsCompanySize(job) {
+  return Boolean(job?.companyUrl) && !getJobCompanySizeRange(job)
+}
 
 export function getEffectiveBatchesLoaded(pagination, jobsCount) {
   if (pagination.batchesLoaded > 0) return pagination.batchesLoaded
@@ -18,10 +38,10 @@ export function getEffectiveBatchesLoaded(pagination, jobsCount) {
 
 function repairPagination(pagination, jobsCount) {
   const batchesLoaded = getEffectiveBatchesLoaded(pagination, jobsCount)
-  // Show Load More whenever jobs are loaded; hide only after an explicit end-of-results fetch
-  const hasMore = jobsCount > 0
-
-  return { batchesLoaded, hasMore }
+  return {
+    batchesLoaded,
+    hasMore: Boolean(pagination?.hasMore),
+  }
 }
 
 function normalizePagination(stored) {
@@ -61,7 +81,12 @@ export function useJobs() {
   const [fetchProgress, setFetchProgress] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const [notice, setNotice] = useState(null)
   const fetchInFlight = useRef(false)
+  const fetchAbortController = useRef(null)
+  const fetchRunToken = useRef(0)
+  const enrichInFlight = useRef(false)
+  const backfillAttempted = useRef('')
 
   const persistJobs = useCallback((nextJobs) => {
     setJobs(nextJobs)
@@ -79,47 +104,51 @@ export function useJobs() {
   }, [])
 
   const applyFetchResult = useCallback(
-    (result, { append, startPage, jobsBeforeFetch = [] }) => {
-      if (!append && result.jobs.length === 0) {
+    (result, { append, startPage, jobsBeforeFetch = [], scrapeDateFilter = 'all' }) => {
+      const scopedJobs = filterJobsByScrapeRange(result.jobs, scrapeDateFilter)
+      const scopedResult = { ...result, jobs: scopedJobs }
+
+      if (!append && scopedResult.jobs.length === 0) {
         if (jobsBeforeFetch.length > 0) {
           persistJobs(jobsBeforeFetch)
         }
         setError(
-          `Scraper returned 0 jobs. LinkedIn may be rate limiting — wait 15–30 minutes, reduce pages per keyword, or add your li_at cookie in Settings.`
+          `Scraper returned 0 jobs. LinkedIn may be rate limiting — wait 15–30 minutes or add your li_at cookie in Settings.`
         )
         return jobsBeforeFetch.length > 0 ? jobsBeforeFetch : null
       }
 
-      if (append && result.jobs.length === 0) {
+      if (append && scopedResult.jobs.length === 0) {
         persistPagination({
           batchesLoaded: getEffectiveBatchesLoaded(
             { batchesLoaded: startPage - 1, hasMore: true },
             jobsBeforeFetch.length
           ),
-          hasMore: Boolean(result.hasMore),
+          hasMore: Boolean(scopedResult.hasMore),
         })
         setError(
-          result.hasMore
+          scopedResult.hasMore
             ? `Batch ${startPage} returned no jobs. Wait a minute and try Load More again, or add your li_at cookie in Settings.`
             : `No more jobs found. Your ${jobsBeforeFetch.length} existing jobs were kept.`
         )
         return jobsBeforeFetch
       }
 
-      const nextJobs = append
-        ? dedupeJobs(jobsBeforeFetch, result.jobs)
-        : result.jobs
+      const nextJobs = (append
+        ? dedupeJobs(jobsBeforeFetch, scopedResult.jobs)
+        : scopedResult.jobs
+      ).map(normalizeJob)
       const addedCount = append
         ? nextJobs.length - jobsBeforeFetch.length
         : nextJobs.length
 
-      if (append && addedCount === 0 && result.jobs.length > 0) {
+      if (append && addedCount === 0 && scopedResult.jobs.length > 0) {
         persistPagination({
           batchesLoaded: startPage,
-          hasMore: Boolean(result.hasMore),
+          hasMore: Boolean(scopedResult.hasMore),
         })
         setError(
-          result.hasMore
+          scopedResult.hasMore
             ? `Batch ${startPage} only returned jobs you already have. Try Load More again in a minute.`
             : `No more new jobs — LinkedIn results overlap with what you already have.`
         )
@@ -128,17 +157,13 @@ export function useJobs() {
 
       persistJobs(nextJobs)
 
-      const batchesLoaded = startPage
-      const hasMore =
-        addedCount > 0 && (result.hasMore ?? true)
-
       persistPagination({
-        batchesLoaded,
-        hasMore,
+        batchesLoaded: append ? startPage : 1,
+        hasMore: append ? addedCount > 0 && Boolean(scopedResult.hasMore) : false,
       })
       persistLastFetched(new Date().toISOString())
-      setFetchMeta(result.meta)
-      saveToStorage(STORAGE_KEYS.fetchMeta, result.meta)
+      setFetchMeta(scopedResult.meta)
+      saveToStorage(STORAGE_KEYS.fetchMeta, scopedResult.meta)
 
       return nextJobs
     },
@@ -157,31 +182,115 @@ export function useJobs() {
 
       const jobsBeforeFetch = jobs
       const keywordCount = parseKeywordList(settings.keywords).length
+      let latestProgressJobs = append ? jobsBeforeFetch : []
+      const abortController = new AbortController()
+      const runToken = fetchRunToken.current + 1
 
+      fetchRunToken.current = runToken
       fetchInFlight.current = true
+      fetchAbortController.current = abortController
       setLoading(true)
       setError(null)
+      setNotice(null)
 
       if (!append) {
         persistPagination(DEFAULT_PAGINATION)
+        backfillAttempted.current = ''
       }
 
       setFetchProgress({
         step: startPage,
         append,
         keywordCount,
-        jobsLoaded: append ? jobsBeforeFetch.length : jobs.length,
+        keywordIndex: 0,
+        jobsLoaded: append ? jobsBeforeFetch.length : 0,
       })
 
+      const scrapeDateFilter = settings.scrapeDateFilter ?? 'all'
+
       try {
-        const result = await fetchJobsFromScraper(settings, startPage)
+        const useProgressive = !append
+
+        const result = await fetchJobsFromScraper(settings, startPage, {
+          signal: abortController.signal,
+          onProgress: useProgressive
+            ? (progress) => {
+                if (
+                  fetchRunToken.current !== runToken ||
+                  abortController.signal.aborted
+                ) {
+                  return
+                }
+
+                const {
+                  keyword,
+                  keywordIndex,
+                  keywordCount,
+                  pageIndex,
+                  jobs: partialJobs,
+                  jobsLoaded,
+                  addedThisPage,
+                  addedThisKeyword,
+                  completed,
+                  total,
+                  loaded,
+                  phase,
+                  currentKeyword,
+                  afterRateLimit,
+                  remainingSeconds,
+                  runRequestCount,
+                } = progress
+
+                setFetchProgress({
+                  step: startPage,
+                  append,
+                  keywordCount,
+                  keywordIndex,
+                  pageIndex,
+                  currentKeyword: currentKeyword ?? keyword,
+                  jobsLoaded,
+                  addedThisPage,
+                  addedThisKeyword,
+                  completed,
+                  total,
+                  loaded,
+                  phase,
+                  afterRateLimit,
+                  remainingSeconds,
+                  runRequestCount,
+                })
+                if (partialJobs?.length > 0) {
+                  const scopedPartialJobs = filterJobsByScrapeRange(
+                    partialJobs,
+                    scrapeDateFilter
+                  ).map(normalizeJob)
+                  const isEnrichmentPhase =
+                    phase === 'enriching' || phase === 'enriched'
+
+                  if (
+                    isEnrichmentPhase ||
+                    scopedPartialJobs.length >= latestProgressJobs.length
+                  ) {
+                    latestProgressJobs = scopedPartialJobs
+                    persistJobs(scopedPartialJobs)
+                  }
+                }
+              }
+            : undefined,
+        })
         applyFetchResult(result, {
           append,
           startPage,
           jobsBeforeFetch,
+          scrapeDateFilter,
         })
         if (result.warning) {
-          setError(result.warning)
+          if (isInformationalScrapeWarning(result.warning)) {
+            setNotice(result.warning)
+            setError(null)
+          } else {
+            setError(result.warning)
+          }
         } else if (append && result.jobs.length > 0) {
           const added =
             dedupeJobs(jobsBeforeFetch, result.jobs).length -
@@ -192,6 +301,35 @@ export function useJobs() {
         }
         return result
       } catch (err) {
+        if (isAbortError(err)) {
+          const newerFetchStarted =
+            fetchRunToken.current !== runToken
+          if (newerFetchStarted) {
+            return null
+          }
+
+          const stoppedJobs =
+            !append && latestProgressJobs.length > 0
+              ? latestProgressJobs.map(normalizeJob)
+              : jobsBeforeFetch
+          persistJobs(stoppedJobs)
+          persistPagination({
+            batchesLoaded: stoppedJobs.length > 0 ? 1 : 0,
+            hasMore: stoppedJobs.length > 0,
+          })
+          persistLastFetched(new Date().toISOString())
+          setError(
+            stoppedJobs.length > 0
+              ? `Scrape stopped. Kept ${stoppedJobs.length} jobs loaded so far.`
+              : 'Scrape stopped.'
+          )
+          return {
+            jobs: stoppedJobs,
+            hasMore: stoppedJobs.length > 0,
+            stopped: true,
+          }
+        }
+
         if (jobsBeforeFetch.length > 0) {
           persistJobs(jobsBeforeFetch)
         }
@@ -217,19 +355,39 @@ export function useJobs() {
         )
         throw err
       } finally {
-        fetchInFlight.current = false
-        setLoading(false)
-        setFetchProgress(null)
+        if (fetchRunToken.current === runToken) {
+          fetchInFlight.current = false
+          setLoading(false)
+          setFetchProgress(null)
+        }
+        if (
+          fetchRunToken.current === runToken &&
+          fetchAbortController.current === abortController
+        ) {
+          fetchAbortController.current = null
+        }
       }
     },
     [
       applyFetchResult,
       jobs,
       persistJobs,
+      persistLastFetched,
       persistPagination,
       pagination,
     ]
   )
+
+  const stopFetching = useCallback(() => {
+    fetchRunToken.current += 1
+    fetchAbortController.current?.abort()
+    clearActiveScrapeRunLock()
+    fetchInFlight.current = false
+    fetchAbortController.current = null
+    setLoading(false)
+    setFetchProgress(null)
+    setError('Scrape stopped.')
+  }, [])
 
   const clearJobs = useCallback(() => {
     persistJobs([])
@@ -238,8 +396,43 @@ export function useJobs() {
     setFetchMeta(null)
     saveToStorage(STORAGE_KEYS.fetchMeta, null)
     setError(null)
+    setNotice(null)
     setFetchProgress(null)
+    backfillAttempted.current = ''
   }, [persistJobs, persistPagination, persistLastFetched])
+
+  const backfillCompanySizes = useCallback(
+    async (settings) => {
+      if (settings.fetchCompanySize === false) return
+      if (fetchInFlight.current || enrichInFlight.current) return
+      if (jobs.length === 0 || !jobs.some(jobNeedsCompanySize)) return
+
+      const fingerprint = jobs
+        .map((job) => job.id || job.companyUrl)
+        .sort()
+        .join('|')
+      if (backfillAttempted.current === fingerprint) return
+
+      backfillAttempted.current = fingerprint
+      enrichInFlight.current = true
+      setFetchProgress({
+        phase: 'enriching',
+        jobsLoaded: jobs.length,
+        keywordCount: 0,
+      })
+
+      try {
+        const enriched = await enrichJobsCompanySize(jobs, settings)
+        persistJobs(enriched.map(normalizeJob))
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err))
+      } finally {
+        enrichInFlight.current = false
+        setFetchProgress(null)
+      }
+    },
+    [jobs, persistJobs]
+  )
 
   const saveJobDetails = useCallback((job, details, company) => {
     const merged = mergeJobWithFetchedDetails(job, details, company ?? {})
@@ -254,21 +447,21 @@ export function useJobs() {
   }, [])
 
   const batchesLoaded = getEffectiveBatchesLoaded(pagination, jobs.length)
-  const nextStep = batchesLoaded + 1
-  const canLoadMore = jobs.length > 0 && pagination.hasMore
 
   return {
     jobs,
     pagination,
-    nextStep,
+    batchesLoaded,
     lastFetched,
     fetchMeta,
     fetchProgress,
     loading,
     error,
+    notice,
     fetchJobs,
-    canLoadMore,
+    stopFetching,
     clearJobs,
+    backfillCompanySizes,
     saveJobDetails,
     setError,
   }

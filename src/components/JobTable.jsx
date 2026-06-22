@@ -1,6 +1,6 @@
 import { JOB_STATUS, getJobStatusKey } from '../utils/jobStatus'
 import { formatPostedDate } from '../utils/filterJobs'
-import { formatCompanySize } from '../utils/companySize'
+import { formatJobCompanySize } from '../utils/companySize'
 
 export default function JobTable({
   jobs,
@@ -31,7 +31,7 @@ export default function JobTable({
             <th>Size</th>
             <th>Location</th>
             <th>Posted</th>
-            <th>Keyword</th>
+            <th>Search used</th>
             <th>Interacted</th>
             <th>Links</th>
           </tr>
@@ -92,14 +92,16 @@ export default function JobTable({
                   <span className="company-name">{job.company || '—'}</span>
                 </td>
                 <td className="company-size-cell">
-                  {formatCompanySize(job.companySizeCount ?? job.companySize)}
+                  {formatJobCompanySize(job)}
                 </td>
                 <td className="location-cell">{job.location || '—'}</td>
                 <td className="posted-cell">
                   {formatPostedDate(job.postedDate)}
                 </td>
                 <td className="keyword-cell">
-                  <span className="keyword-badge">{job.keyword || '—'}</span>
+                  <span className="keyword-badge" title="LinkedIn search that returned this job">
+                    {job.searchKeyword || job.keyword || '—'}
+                  </span>
                 </td>
                 <td className="applied-cell">
                   <label className="applied-check">

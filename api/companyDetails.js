@@ -1,6 +1,6 @@
 import * as cheerio from 'cheerio'
 import { cleanLinkedInUrl } from './linkedinHtmlScraper.js'
-import { parseCompanySizeFromHtml } from './companySize.js'
+import { parseCompanySizeCountFromHtml, parseCompanySizeLabelFromHtml } from './companySize.js'
 import {
   fetchLinkedInPage,
   isBlockedLinkedInResponse,
@@ -84,11 +84,14 @@ export function parseCompanyDetailsFromHtml(html, companyUrl) {
     null
 
   const employeeCount = organization?.numberOfEmployees?.value
-  const parsedSize = Number.isFinite(employeeCount)
-    ? employeeCount
-    : parseCompanySizeFromHtml(html)
+  const parsedFromJson =
+    Number.isFinite(employeeCount) && employeeCount > 1 ? employeeCount : null
+  const parsedSize = parsedFromJson ?? parseCompanySizeCountFromHtml(html)
 
-  const companySizeLabel = readAboutField($, 'about-us__size') || null
+  const companySizeLabel =
+    readAboutField($, 'about-us__size') ||
+    parseCompanySizeLabelFromHtml(html) ||
+    null
 
   const resolvedUrl = cleanLinkedInUrl(companyUrl)
 

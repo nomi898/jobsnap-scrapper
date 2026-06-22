@@ -7,23 +7,98 @@ import Layout from '../components/Layout'
 import {
   DASHBOARD_DEFAULT_FILTERS,
   getRegionLabel,
+  getScrapeDateLabel,
 } from '../constants'
 import { useJobs } from '../hooks/useJobs'
 import { useSettings } from '../hooks/useSettings'
 import { useJobStatus } from '../hooks/useJobStatus'
 import {
-  countJobsByKeyword,
+  countJobsBySearchKeyword,
   enrichJobKeywords,
   filterAndSortJobs,
   formatLastFetched,
   resolveKeywordFilter,
 } from '../utils/filterJobs'
+import { getJobCompanySizeRange } from '../utils/companySize'
 import { countJobStatuses } from '../utils/jobStatus'
 import { parseKeywordList } from '../utils/keywords'
 import {
   getLinkedInAccessLabel,
   normalizeLiAtCookie,
 } from '../utils/linkedinCookie'
+
+function formatFetchProgress(progress, jobsLength = 0) {
+  if (!progress) return 'Fetching…'
+  const count = progress.jobsLoaded ?? jobsLength
+  if (progress.phase === 'enriching') {
+    if (progress.total > 0) {
+      return `Loading company sizes · ${progress.completed ?? 0}/${progress.total} companies · ${count} jobs`
+    }
+    return `Loading company sizes · ${count} jobs`
+  }
+  if (progress.phase === 'keyword-delay') {
+    const prefix =
+      progress.keywordCount > 1
+        ? `Keyword ${progress.keywordIndex}/${progress.keywordCount}: `
+        : ''
+    const target = progress.currentKeyword ?? 'next keyword'
+    if (progress.remainingSeconds != null) {
+      return `${prefix}Starting ${target} in ${progress.remainingSeconds}s`
+    }
+    return `${prefix}Starting ${target} soon…`
+  }
+  if (progress.phase === 'keyword-cooldown') {
+    const prefix =
+      progress.keywordCount > 1
+        ? `Keyword ${progress.keywordIndex}/${progress.keywordCount}: `
+        : ''
+    const target = progress.currentKeyword ?? 'next keyword'
+    if (progress.remainingSeconds != null) {
+      return `${prefix}Starting ${target} in ${progress.remainingSeconds}s`
+    }
+    return `${prefix}Starting ${target} soon…`
+  }
+  if (progress.phase === 'run-cooldown') {
+    if (progress.remainingSeconds != null) {
+      return `Longer cooldown after ${progress.runRequestCount ?? 25} requests · ${progress.remainingSeconds}s`
+    }
+    return 'Longer cooldown before continuing…'
+  }
+  if (progress.phase === 'page-delay') {
+    const page = progress.pageIndex ? `page ${progress.pageIndex + 1}` : 'next page'
+    const prefix =
+      progress.keywordCount > 1
+        ? `Keyword ${progress.keywordIndex}/${progress.keywordCount}: `
+        : ''
+    if (progress.remainingSeconds != null) {
+      return `${prefix}${progress.currentKeyword ?? 'Current keyword'} · starting ${page} in ${progress.remainingSeconds}s`
+    }
+    return `${prefix}${progress.currentKeyword ?? 'Current keyword'} · starting ${page} soon…`
+  }
+  if (progress.currentKeyword) {
+    const page = progress.pageIndex ? ` · page ${progress.pageIndex}` : ''
+    const prefix =
+      progress.keywordCount > 1
+        ? `Keyword ${progress.keywordIndex}/${progress.keywordCount}: `
+        : ''
+    const added =
+      progress.addedThisPage > 0 && progress.phase === 'page-done'
+        ? ` (+${progress.addedThisPage} new)`
+        : ''
+    const fetching = progress.phase === 'page' ? ' — fetching…' : ''
+    const done = progress.phase === 'done' ? ' — done, next keyword…' : ''
+    const lowYield =
+      progress.phase === 'page-done' &&
+      progress.addedThisPage === 0 &&
+      progress.pageIndex > 1
+        ? ' (duplicates only)'
+        : ''
+    return `${prefix}${progress.currentKeyword}${page} · ${count} jobs${added}${lowYield}${fetching}${done}`
+  }
+  return progress.keywordCount > 1
+    ? `Starting ${progress.keywordCount} keywords…`
+    : 'Fetching first page…'
+}
 
 export default function Dashboard() {
   const { settings, isConfigured } = useSettings()
@@ -32,9 +107,11 @@ export default function Dashboard() {
     lastFetched,
     loading,
     error,
+    notice,
     fetchJobs,
-    canLoadMore,
+    stopFetching,
     clearJobs,
+    backfillCompanySizes,
     saveJobDetails,
     fetchMeta,
     fetchProgress,
@@ -44,6 +121,26 @@ export default function Dashboard() {
     useJobStatus(jobs)
   const [filters, setFilters] = useState(DASHBOARD_DEFAULT_FILTERS)
   const [selectedJob, setSelectedJob] = useState(null)
+  const [stoppedLocally, setStoppedLocally] = useState(false)
+
+  useEffect(() => {
+    if (loading || jobs.length === 0 || settings.fetchCompanySize === false) {
+      return
+    }
+
+    const needsSizes = jobs.some(
+      (job) => job.companyUrl && !getJobCompanySizeRange(job)
+    )
+    if (!needsSizes) return
+
+    backfillCompanySizes(settings)
+  }, [
+    backfillCompanySizes,
+    jobs,
+    loading,
+    settings,
+    settings.fetchCompanySize,
+  ])
 
   const keywordList = useMemo(
     () => parseKeywordList(settings.keywords),
@@ -85,6 +182,12 @@ export default function Dashboard() {
     [jobs, keywordList]
   )
 
+  const visibleFetchProgress = stoppedLocally ? null : fetchProgress
+  const visibleLoading = loading && !stoppedLocally
+  const isLiveFetch = Boolean(
+    visibleFetchProgress && !visibleFetchProgress.append
+  )
+
   const filteredJobs = useMemo(
     () =>
       filterAndSortJobs(enrichedJobs, {
@@ -95,9 +198,11 @@ export default function Dashboard() {
     [enrichedJobs, activeFilters, keywordList, statusMap]
   )
 
+  const tableJobs = filteredJobs
+
   const visibleStatusCounts = useMemo(
-    () => countJobStatuses(filteredJobs, statusMap),
-    [filteredJobs, statusMap]
+    () => countJobStatuses(tableJobs, statusMap),
+    [tableJobs, statusMap]
   )
 
   const totalStatusCounts = useMemo(
@@ -133,6 +238,7 @@ export default function Dashboard() {
     filters.hideDuplicateTitleCompany
 
   const handleFetch = async () => {
+    setStoppedLocally(false)
     try {
       await fetchJobs(settings, { append: false })
     } catch {
@@ -140,12 +246,9 @@ export default function Dashboard() {
     }
   }
 
-  const handleLoadMore = async () => {
-    try {
-      await fetchJobs(settings, { append: true })
-    } catch {
-      // error state handled in hook
-    }
+  const handleStopFetch = () => {
+    setStoppedLocally(true)
+    stopFetching()
   }
 
   return (
@@ -156,16 +259,25 @@ export default function Dashboard() {
             type="button"
             className="btn btn-primary"
             onClick={handleFetch}
-            disabled={loading || !isConfigured}
+            disabled={visibleLoading || !isConfigured}
           >
-            {loading ? 'Fetching…' : 'Fetch Jobs'}
+            {visibleLoading ? 'Fetching…' : 'Fetch Jobs'}
           </button>
+          {visibleLoading && (
+            <button
+              type="button"
+              className="btn btn-danger"
+              onClick={handleStopFetch}
+            >
+              Stop Scraping
+            </button>
+          )}
           {jobs.length > 0 && (
             <button
               type="button"
               className="btn btn-ghost"
               onClick={clearJobs}
-              disabled={loading}
+              disabled={visibleLoading}
             >
               Clear
             </button>
@@ -179,7 +291,13 @@ export default function Dashboard() {
           <span className="meta-chip">
             <span className="meta-chip-label">Search</span>
             <span className="meta-chip-value">
-              {keywordList.length} keyword{keywordList.length === 1 ? '' : 's'}
+                {keywordList.length} keyword{keywordList.length === 1 ? '' : 's'}
+            </span>
+          </span>
+          <span className="meta-chip">
+            <span className="meta-chip-label">Scrape range</span>
+            <span className="meta-chip-value">
+              {getScrapeDateLabel(settings.scrapeDateFilter)}
             </span>
           </span>
           <span className="meta-chip">
@@ -200,8 +318,10 @@ export default function Dashboard() {
               </span>
             </span>
           )}
-          {fetchProgress && !fetchProgress.append && (
-            <span className="meta-chip meta-chip-active">Fetching…</span>
+          {visibleFetchProgress && !visibleFetchProgress.append && (
+            <span className="meta-chip meta-chip-active">
+              {formatFetchProgress(visibleFetchProgress, jobs.length)}
+            </span>
           )}
         </div>
       </section>
@@ -214,16 +334,15 @@ export default function Dashboard() {
       )}
 
       {error && <div className="banner banner-error">{error}</div>}
+      {notice && !error && <div className="banner banner-info">{notice}</div>}
 
-      {!fetchProgress &&
-        fetchMeta?.pagesRequested > 1 &&
-        enrichedJobs.length < fetchMeta.pagesRequested * 3 && (
+      {!visibleFetchProgress &&
+        fetchMeta?.rateLimitedPages > 0 &&
+        enrichedJobs.length > 0 && (
           <div className="banner banner-warning">
-            Only {enrichedJobs.length} unique jobs from{' '}
-            {fetchMeta.pagesRequested} LinkedIn page requests. Increase{' '}
-            <strong>Pages per keyword</strong> in Settings (try 10), ensure both
-            keywords are set, and use <strong>Load More</strong> for the next
-            batch.
+            LinkedIn rate-limited part of the search ({fetchMeta.rateLimitedPages}{' '}
+            page(s)). Showing {enrichedJobs.length} jobs — wait 15–30 minutes
+            and fetch again for more.
           </div>
         )}
 
@@ -241,7 +360,7 @@ export default function Dashboard() {
             <div className="results-summary">
               <div className="results-stats">
                 <div className="stat-item">
-                  <span className="stat-value">{filteredJobs.length}</span>
+                  <span className="stat-value">{tableJobs.length}</span>
                   <span className="stat-label">shown</span>
                 </div>
                 <div className="stat-item">
@@ -268,35 +387,42 @@ export default function Dashboard() {
                     </span>
                   )}
               </div>
-              {enrichedJobs.length > 0 &&
+              {jobs.length > 0 &&
                 keywordList.length > 1 &&
                 activeFilters.keyword === 'all' && (
                   <div className="keyword-stats">
-                    {keywordList.map((kw) => (
-                      <span key={kw} className="keyword-stat">
-                        <span className="keyword-stat-name">{kw}</span>
-                        <span className="keyword-stat-count">
-                          {countJobsByKeyword(enrichedJobs, kw, keywordList)}
+                    {keywordList.map((kw) => {
+                      const isActive =
+                        isLiveFetch &&
+                        visibleFetchProgress?.currentKeyword &&
+                        visibleFetchProgress.currentKeyword.toLowerCase() ===
+                          kw.toLowerCase()
+                      return (
+                        <span
+                          key={kw}
+                          className={`keyword-stat${isActive ? ' keyword-stat-active' : ''}`}
+                        >
+                          <span className="keyword-stat-name">{kw}</span>
+                          <span className="keyword-stat-count">
+                            {countJobsBySearchKeyword(enrichedJobs, kw)}
+                          </span>
                         </span>
-                      </span>
-                    ))}
+                      )
+                    })}
                   </div>
                 )}
-              {fetchProgress && !fetchProgress.append && (
-                <span className="results-status">Fetching…</span>
-              )}
             </div>
           )}
 
-          {jobs.length === 0 && !fetchProgress ? (
+          {jobs.length === 0 && !visibleFetchProgress ? (
             <div className="empty-state">
               <p>No jobs loaded yet.</p>
             </div>
-          ) : jobs.length === 0 && fetchProgress && !fetchProgress.append ? (
+          ) : jobs.length === 0 && visibleFetchProgress && !visibleFetchProgress.append ? (
             <div className="empty-state">
-              <p>Fetching jobs…</p>
+              <p>{formatFetchProgress(visibleFetchProgress, jobs.length)}</p>
             </div>
-          ) : filteredJobs.length === 0 && jobs.length > 0 ? (
+          ) : tableJobs.length === 0 && jobs.length > 0 ? (
             <div className="empty-state">
               <p>No jobs match your filters.</p>
               <p className="muted">
@@ -306,15 +432,25 @@ export default function Dashboard() {
               </p>
             </div>
           ) : (
-            <JobTable
-              jobs={filteredJobs}
-              getStatus={getStatus}
-              getLinkOpens={getLinkOpens}
-              onMarkViewed={markViewed}
-              onMarkCompanyOpened={markCompanyOpened}
-              onToggleApplied={handleToggleApplied}
-              onJobClick={(job) => setSelectedJob(job)}
-            />
+            <>
+              {visibleFetchProgress && !visibleFetchProgress.append && (
+                <div className="live-fetch-banner" role="status" aria-live="polite">
+                  <span className="live-fetch-dot" aria-hidden="true" />
+                  <span>
+                    {formatFetchProgress(visibleFetchProgress, jobs.length)}
+                  </span>
+                </div>
+              )}
+              <JobTable
+                jobs={tableJobs}
+                getStatus={getStatus}
+                getLinkOpens={getLinkOpens}
+                onMarkViewed={markViewed}
+                onMarkCompanyOpened={markCompanyOpened}
+                onToggleApplied={handleToggleApplied}
+                onJobClick={(job) => setSelectedJob(job)}
+              />
+            </>
           )}
 
           {selectedJob && (
@@ -330,21 +466,6 @@ export default function Dashboard() {
             />
           )}
 
-          {jobs.length > 0 &&
-            (canLoadMore || (loading && fetchProgress?.append)) && (
-              <div className="load-more-bar">
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={handleLoadMore}
-                  disabled={loading || !isConfigured || !canLoadMore}
-                >
-                  {loading && fetchProgress?.append
-                    ? 'Loading…'
-                    : `Load More Jobs`}
-                </button>
-              </div>
-            )}
         </div>
       </section>
     </Layout>

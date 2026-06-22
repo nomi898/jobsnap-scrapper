@@ -310,7 +310,8 @@ export default function JobDetailModal({
                         label="Size"
                         value={
                           company.companySizeLabel ||
-                          formatCompanySize(company.companySize)
+                          formatCompanySize(company.companySize) ||
+                          null
                         }
                       />
                       <CompanyFact label="Industry" value={company.industry} />
