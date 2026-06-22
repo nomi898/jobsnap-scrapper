@@ -9,8 +9,12 @@ import {
   LINKEDIN_RATE_LIMIT_ERROR,
   PAGE_DELAY_MAX_MS,
   PAGE_DELAY_MIN_MS,
+  POST_BLOCK_PAGE_DELAY_MAX_MS,
+  POST_BLOCK_PAGE_DELAY_MIN_MS,
   RATE_LIMIT_COOLDOWN_MAX_MS,
   RATE_LIMIT_COOLDOWN_MIN_MS,
+  RATE_LIMITED_KEYWORD_RETRY_MAX_MS,
+  RATE_LIMITED_KEYWORD_RETRY_MIN_MS,
   SAFETY_MAX_PAGES,
   SCRAPE_RUN_COOLDOWN_EVERY,
   SCRAPE_RUN_COOLDOWN_MAX_MS,
@@ -236,11 +240,15 @@ async function delayBeforeNextKeywordPage({
   accumulated,
   scrapeRunId,
   dateFilter,
+  afterRateLimit,
   signal,
   onProgress,
 }) {
   refreshStoredScrapeLock(scrapeRunId)
-  const delayMs = randomBetween(PAGE_DELAY_MIN_MS, PAGE_DELAY_MAX_MS)
+  const delayMs =
+    afterRateLimit ?
+      randomBetween(POST_BLOCK_PAGE_DELAY_MIN_MS, POST_BLOCK_PAGE_DELAY_MAX_MS)
+    : randomBetween(PAGE_DELAY_MIN_MS, PAGE_DELAY_MAX_MS)
   await sleepWithCountdown(delayMs, signal, (remainingSeconds) => {
     refreshStoredScrapeLock(scrapeRunId)
     onProgress?.({
@@ -256,6 +264,7 @@ async function delayBeforeNextKeywordPage({
       jobsLoaded: accumulated.length,
       phase: 'page-delay',
       delayMs,
+      afterRateLimit,
       remainingSeconds,
     })
   })
@@ -293,9 +302,44 @@ async function delayForRunCooldown({
   })
 }
 
+async function delayBeforeRateLimitedKeywordRetry({
+  retryCount,
+  retryKeywords,
+  accumulated,
+  scrapeRunId,
+  signal,
+  onProgress,
+}) {
+  const delayMs = randomBetween(
+    RATE_LIMITED_KEYWORD_RETRY_MIN_MS,
+    RATE_LIMITED_KEYWORD_RETRY_MAX_MS
+  )
+
+  await sleepWithCountdown(delayMs, signal, (remainingSeconds) => {
+    refreshStoredScrapeLock(scrapeRunId)
+    onProgress?.({
+      jobs: [...accumulated],
+      jobsLoaded: accumulated.length,
+      phase: 'rate-limit-retry-delay',
+      retryCount,
+      retryKeywords,
+      remainingSeconds,
+    })
+  })
+}
+
 function isRateLimitError(err) {
   const message = err instanceof Error ? err.message : String(err)
-  return /rate limit/i.test(message)
+  return Boolean(err?.rateLimited) || /rate limit/i.test(message)
+}
+
+function buildScrapeError(status, data) {
+  const error = new Error(formatScrapeError(status, data))
+  error.status = status
+  error.rateLimited = Boolean(data?.rateLimited)
+  error.nextStartOffset =
+    data?.nextStartOffset ?? data?.meta?.nextStartOffset ?? null
+  return error
 }
 
 function extractJobsFromResponse(data) {
@@ -352,7 +396,7 @@ async function fetchKeywordBatch(settings, keywords, startPage, batchOptions = {
   }
 
   if (!response.ok) {
-    throw new Error(formatScrapeError(response.status, data))
+    throw buildScrapeError(response.status, data)
   }
 
   const rawJobs = extractJobsFromResponse(data)
@@ -487,11 +531,13 @@ async function fetchKeywordAllPages(
   accumulated,
   scrapeRunId,
   runRequestRef,
+  runRateLimitRef,
   signal,
-  onProgress
+  onProgress,
+  initialStartOffset = 0
 ) {
-  let startOffset = 0
-  let pageIndex = 0
+  let startOffset = Math.max(0, Number(initialStartOffset) || 0)
+  let pageIndex = Math.floor(startOffset / LINKEDIN_BATCH_SIZE)
   let keywordMeta = null
   let hasMore = true
   let keywordRateLimited = false
@@ -531,9 +577,12 @@ async function fetchKeywordAllPages(
         const message = err instanceof Error ? err.message : 'Fetch failed'
         if (isRateLimitError(err)) {
           keywordRateLimited = true
-          if (accumulated.length === 0) {
-            throw err
-          }
+          runRateLimitRef.value = true
+          const retryOffset =
+            Number.isFinite(Number(err.nextStartOffset)) ?
+              Number(err.nextStartOffset)
+            : startOffset
+          startOffset = retryOffset
           warnings.push(
             `${keyword} (page ${pageIndex}): ${message}. Stopped this keyword to avoid retrying a blocked page.`
           )
@@ -546,6 +595,9 @@ async function fetchKeywordAllPages(
           throw err
         }
         keywordRateLimited = isRateLimitError(err)
+        if (keywordRateLimited) {
+          runRateLimitRef.value = true
+        }
         warnings.push(`${keyword} (page ${pageIndex}): ${message}`)
         hasMore = false
         pageResult = null
@@ -563,6 +615,9 @@ async function fetchKeywordAllPages(
 
     if (pageResult.rateLimited || pageResult.stoppedEarly) {
       keywordRateLimited = true
+      if (pageResult.rateLimited) {
+        runRateLimitRef.value = true
+      }
     }
 
     if (pageResult.result.warning) {
@@ -615,6 +670,7 @@ async function fetchKeywordAllPages(
         accumulated,
         scrapeRunId,
         dateFilter: settings.scrapeDateFilter ?? 'all',
+        afterRateLimit: runRateLimitRef.value,
         signal,
         onProgress,
       })
@@ -638,6 +694,7 @@ async function fetchKeywordAllPages(
     warnings,
     exhausted: pageCapReached ? false : (keywordExhausted ?? !hasMore),
     rateLimited: keywordRateLimited,
+    retryOffset: keywordRateLimited ? startOffset : null,
     stoppedEarly: keywordRateLimited || pageCapReached || stoppedForEmptyMatches,
   }
 }
@@ -707,6 +764,8 @@ async function fetchJobsProgressively(
   let allExhausted = true
   let afterRateLimit = false
   const runRequestRef = { value: 0 }
+  const runRateLimitRef = { value: false }
+  const rateLimitedRetries = []
 
   for (let index = 0; index < keywords.length; index += 1) {
     throwIfAborted(signal)
@@ -744,6 +803,7 @@ async function fetchJobsProgressively(
         accumulated,
         scrapeRunId,
         runRequestRef,
+        runRateLimitRef,
         signal,
         onProgress
       )
@@ -774,7 +834,17 @@ async function fetchJobsProgressively(
 
     accumulated = keywordResult.jobs
     combinedMeta = mergeFetchMeta(combinedMeta, keywordResult.meta, keywords)
-    warnings.push(...keywordResult.warnings)
+
+    if (keywordResult.rateLimited) {
+      rateLimitedRetries.push({
+        keyword,
+        previousKeyword,
+        keywordIndex,
+        retryOffset: keywordResult.retryOffset ?? 0,
+      })
+    } else {
+      warnings.push(...keywordResult.warnings)
+    }
 
     if (!keywordResult.exhausted) {
       allExhausted = false
@@ -791,6 +861,55 @@ async function fetchJobsProgressively(
       jobsLoaded: accumulated.length,
       phase: 'done',
     })
+  }
+
+  if (rateLimitedRetries.length > 0) {
+    await delayBeforeRateLimitedKeywordRetry({
+      retryCount: rateLimitedRetries.length,
+      retryKeywords: rateLimitedRetries.map((entry) => entry.keyword),
+      accumulated,
+      scrapeRunId,
+      signal,
+      onProgress,
+    })
+
+    for (const retry of rateLimitedRetries) {
+      throwIfAborted(signal)
+      onProgress?.({
+        keyword: retry.keyword,
+        keywordIndex: retry.keywordIndex,
+        keywordCount,
+        currentKeyword: retry.keyword,
+        jobs: [...accumulated],
+        jobsLoaded: accumulated.length,
+        phase: 'retrying-rate-limited-keyword',
+      })
+
+      const retryResult = await fetchKeywordAllPages(
+        settings,
+        retry.keyword,
+        retry.previousKeyword,
+        retry.keywordIndex,
+        keywordCount,
+        accumulated,
+        scrapeRunId,
+        runRequestRef,
+        runRateLimitRef,
+        signal,
+        onProgress,
+        retry.retryOffset
+      )
+
+      accumulated = retryResult.jobs
+      combinedMeta = mergeFetchMeta(combinedMeta, retryResult.meta, keywords)
+      warnings.push(...retryResult.warnings)
+
+      if (retryResult.rateLimited) {
+        warnings.push(
+          `${retry.keyword}: still rate-limited after one delayed retry.`
+        )
+      }
+    }
   }
 
   return finalizeFetchJobs(
