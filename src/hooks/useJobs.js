@@ -19,12 +19,31 @@ function isAbortError(err) {
   return err?.name === 'AbortError'
 }
 
-function isInformationalScrapeWarning(message) {
-  return (
-    /stopped after \d+ pages with no new matching title results/i.test(
-      String(message ?? '')
-    ) && !/rate.?limit|blocked|failed|error/i.test(String(message ?? ''))
-  )
+function splitScrapeWarning(message) {
+  const text = String(message ?? '').trim()
+  if (!text) return { info: null, error: null }
+
+  const infoMatches = [
+    ...text.matchAll(
+      /[^.]+?: stopped after \d+ pages with no new matching title results\./gi
+    ),
+  ].map((match) => match[0].trim())
+
+  const error = text
+    .replace(
+      /[^.]+?: stopped after \d+ pages with no new matching title results\./gi,
+      ''
+    )
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  return {
+    info:
+      infoMatches.length > 0
+        ? `Scrape completed. ${infoMatches.join(' ')}`
+        : null,
+    error: error || null,
+  }
 }
 
 function jobNeedsCompanySize(job) {
@@ -239,6 +258,8 @@ export function useJobs() {
                   afterRateLimit,
                   remainingSeconds,
                   runRequestCount,
+                  retryCount,
+                  retryKeywords,
                 } = progress
 
                 setFetchProgress({
@@ -258,6 +279,8 @@ export function useJobs() {
                   afterRateLimit,
                   remainingSeconds,
                   runRequestCount,
+                  retryCount,
+                  retryKeywords,
                 })
                 if (partialJobs?.length > 0) {
                   const scopedPartialJobs = filterJobsByScrapeRange(
@@ -285,12 +308,9 @@ export function useJobs() {
           scrapeDateFilter,
         })
         if (result.warning) {
-          if (isInformationalScrapeWarning(result.warning)) {
-            setNotice(result.warning)
-            setError(null)
-          } else {
-            setError(result.warning)
-          }
+          const warning = splitScrapeWarning(result.warning)
+          setNotice(warning.info)
+          setError(warning.error)
         } else if (append && result.jobs.length > 0) {
           const added =
             dedupeJobs(jobsBeforeFetch, result.jobs).length -

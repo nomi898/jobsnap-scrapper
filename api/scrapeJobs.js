@@ -144,7 +144,9 @@ function randomBetween(min, max) {
 function shouldRetryKeyword(result) {
   return (
     result.jobs.length === 0 &&
-    (result.rateLimited || result.error || result.rateLimitedPages > 0)
+    !result.rateLimited &&
+    result.rateLimitedPages === 0 &&
+    Boolean(result.error)
   )
 }
 
@@ -502,9 +504,12 @@ export async function scrapeJobs({
           : scrapeError ??
             'No jobs found on the search page. Job search always uses the public guest API (cookie is not sent for search).',
         rateLimited,
+        nextStartOffset: keywordResults[0]?.nextOffset ?? startOffset,
         meta: {
           scrapeRunId,
           dateFilter,
+          keywordResults,
+          nextStartOffset: keywordResults[0]?.nextOffset ?? startOffset,
           rateLimitDiagnostics: diagnostics.summary(),
         },
       },

@@ -64,14 +64,33 @@ function formatFetchProgress(progress, jobsLength = 0) {
     }
     return 'Longer cooldown before continuing…'
   }
+  if (progress.phase === 'rate-limit-retry-delay') {
+    const count = progress.retryCount ?? 1
+    const names =
+      Array.isArray(progress.retryKeywords) && progress.retryKeywords.length > 0
+        ? progress.retryKeywords.join(', ')
+        : `${count} rate-limited keyword${count === 1 ? '' : 's'}`
+    if (progress.remainingSeconds != null) {
+      return `Retrying ${names} in ${progress.remainingSeconds}s`
+    }
+    return `Preparing to retry ${names}…`
+  }
+  if (progress.phase === 'retrying-rate-limited-keyword') {
+    const prefix =
+      progress.keywordCount > 1
+        ? `Keyword ${progress.keywordIndex}/${progress.keywordCount}: `
+        : ''
+    return `${prefix}Retrying ${progress.currentKeyword ?? 'rate-limited keyword'} after cooldown…`
+  }
   if (progress.phase === 'page-delay') {
     const page = progress.pageIndex ? `page ${progress.pageIndex + 1}` : 'next page'
     const prefix =
       progress.keywordCount > 1
         ? `Keyword ${progress.keywordIndex}/${progress.keywordCount}: `
         : ''
+    const slower = progress.afterRateLimit ? 'slower ' : ''
     if (progress.remainingSeconds != null) {
-      return `${prefix}${progress.currentKeyword ?? 'Current keyword'} · starting ${page} in ${progress.remainingSeconds}s`
+      return `${prefix}${progress.currentKeyword ?? 'Current keyword'} · starting ${page} in ${progress.remainingSeconds}s${slower ? ` (${slower}after block)` : ''}`
     }
     return `${prefix}${progress.currentKeyword ?? 'Current keyword'} · starting ${page} soon…`
   }
@@ -334,7 +353,7 @@ export default function Dashboard() {
       )}
 
       {error && <div className="banner banner-error">{error}</div>}
-      {notice && !error && <div className="banner banner-info">{notice}</div>}
+      {notice && <div className="banner banner-success">{notice}</div>}
 
       {!visibleFetchProgress &&
         fetchMeta?.rateLimitedPages > 0 &&

@@ -14,6 +14,8 @@ export const LINKEDIN_BATCH_SIZE = 25
 /** Throttle: random delay between search pages (ms) */
 export const PAGE_DELAY_MIN_MS = 12000
 export const PAGE_DELAY_MAX_MS = 20000
+export const POST_BLOCK_PAGE_DELAY_MIN_MS = 25000
+export const POST_BLOCK_PAGE_DELAY_MAX_MS = 45000
 export const CLIENT_RATE_LIMIT_RETRY_MAX = 3
 /** Throttle: longer pause after sustained scraping to stay below block thresholds */
 export const SCRAPE_RUN_COOLDOWN_EVERY = 25
@@ -23,6 +25,9 @@ export const SCRAPE_RUN_COOLDOWN_MAX_MS = 300000
 export const RATE_LIMIT_COOLDOWN_MIN_MS = 90000
 export const RATE_LIMIT_COOLDOWN_MAX_MS = 180000
 export const RATE_LIMIT_RECOVERY_ATTEMPTS = 8
+/** Throttle: wait before retrying keywords that were rate-limited once */
+export const RATE_LIMITED_KEYWORD_RETRY_MIN_MS = 120000
+export const RATE_LIMITED_KEYWORD_RETRY_MAX_MS = 180000
 /** Throttle: random delay between keywords (ms) */
 export const KEYWORD_DELAY_MIN_MS = 15000
 export const KEYWORD_DELAY_MAX_MS = 20000
