@@ -3,6 +3,8 @@ import { normalizeLiAtCookie } from '../src/utils/linkedinCookie.js'
 const USER_AGENT =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
+let linkedinRequestCount = 0
+
 export const LINKEDIN_ACCESS = {
   guest: 'guest',
   session: 'session',
@@ -99,6 +101,16 @@ export function isBlockedLinkedInResponse(html, status) {
   )
 }
 
+function recordLinkedInRequest(diagnostics, event) {
+  if (typeof diagnostics?.recordRequest === 'function') {
+    linkedinRequestCount += 1
+    diagnostics.recordRequest({
+      ...event,
+      globalRequestNumber: linkedinRequestCount,
+    })
+  }
+}
+
 export async function fetchLinkedInPage(url, options = {}) {
   const {
     liAtCookie,
@@ -106,6 +118,8 @@ export async function fetchLinkedInPage(url, options = {}) {
     timeoutMs = 20000,
     fallbackToGuest = true,
     forceGuest = false,
+    diagnostics,
+    requestContext,
   } = options
 
   const {
@@ -133,7 +147,29 @@ export async function fetchLinkedInPage(url, options = {}) {
         redirect: 'follow',
       })
       const html = await response.text()
-      return { response, html }
+      const blocked = isBlockedLinkedInResponse(html, response.status)
+      recordLinkedInRequest(diagnostics, {
+        url,
+        status: response.status,
+        blocked,
+        accessMode: LINKEDIN_ACCESS.guest,
+        sessionSource: 'none',
+        cookieRejected: false,
+        requestContext,
+      })
+      return { response, html, blocked }
+    } catch (err) {
+      recordLinkedInRequest(diagnostics, {
+        url,
+        status: 0,
+        blocked: false,
+        accessMode: LINKEDIN_ACCESS.guest,
+        sessionSource: 'none',
+        cookieRejected: false,
+        error: err instanceof Error ? err.message : String(err),
+        requestContext,
+      })
+      throw err
     } finally {
       clearTimeout(timeout)
     }
@@ -156,7 +192,29 @@ export async function fetchLinkedInPage(url, options = {}) {
         redirect: 'follow',
       })
       const html = await response.text()
-      return { response, html }
+      const blocked = isBlockedLinkedInResponse(html, response.status)
+      recordLinkedInRequest(diagnostics, {
+        url,
+        status: response.status,
+        blocked,
+        accessMode: LINKEDIN_ACCESS.session,
+        sessionSource,
+        cookieRejected: false,
+        requestContext,
+      })
+      return { response, html, blocked }
+    } catch (err) {
+      recordLinkedInRequest(diagnostics, {
+        url,
+        status: 0,
+        blocked: false,
+        accessMode: LINKEDIN_ACCESS.session,
+        sessionSource,
+        cookieRejected: false,
+        error: err instanceof Error ? err.message : String(err),
+        requestContext,
+      })
+      throw err
     } finally {
       clearTimeout(timeout)
     }
@@ -180,7 +238,7 @@ export async function fetchLinkedInPage(url, options = {}) {
     let cookieRejected = false
     let activeSource = sessionSource
 
-    if (fallbackToGuest && isBlockedLinkedInResponse(result.html, result.response.status)) {
+    if (fallbackToGuest && result.blocked) {
       result = await attemptGuest()
       accessMode = LINKEDIN_ACCESS.guest
       cookieRejected = true

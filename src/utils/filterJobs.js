@@ -1,6 +1,7 @@
 import { isJobHiddenByStatusFilters } from './jobStatus'
 import { matchesWorkTypeFilter } from './workType'
 import { matchesCompanySizeFilter } from './companySize'
+import { canonicalSearchKeyword, extractTitleSignals } from './keywords'
 
 function parseRelativePostedDate(value) {
   const text = String(value ?? '')
@@ -22,7 +23,7 @@ function parseRelativePostedDate(value) {
     return date
   }
 
-  const minuteMatch = text.match(/(\d+)\s+minutes?\s+ago/)
+  const minuteMatch = text.match(/(\d+)\s+min(?:ute)?s?\s+ago/)
   if (minuteMatch) {
     const date = new Date(now)
     date.setMinutes(date.getMinutes() - Number(minuteMatch[1]))
@@ -106,6 +107,89 @@ function parsePostedDate(value) {
   return Number.isNaN(date.getTime()) ? null : date
 }
 
+const SCRAPE_RANGE_HOURS = {
+  '1d': 24,
+  '3d': 72,
+  '7d': 168,
+  '30d': 720,
+}
+
+function hasRelativePostedText(value) {
+  const text = String(value ?? '').trim().toLowerCase()
+  return (
+    /\bago\b/.test(text) ||
+    text === 'today' ||
+    text === 'yesterday' ||
+    text === 'just now' ||
+    text === 'recently'
+  )
+}
+
+function resolveJobPostedDate(job) {
+  const postedText = job?.postedDate
+
+  // LinkedIn listing text ("4 days ago") is more reliable than datetime attr
+  if (hasRelativePostedText(postedText)) {
+    const fromText = parsePostedDate(postedText)
+    if (fromText) return fromText
+  }
+
+  const fromText = postedText ? parsePostedDate(postedText) : null
+  const fromIso = job?.postedAtIso ? parsePostedDate(job.postedAtIso) : null
+
+  if (fromText && fromIso) {
+    return fromText.getTime() <= fromIso.getTime() ? fromText : fromIso
+  }
+
+  return fromText || fromIso
+}
+
+export function getScrapeCutoff(scrapeDateFilter) {
+  const hours = SCRAPE_RANGE_HOURS[scrapeDateFilter]
+  if (!hours) return null
+  return new Date(Date.now() - hours * 60 * 60 * 1000)
+}
+
+export function isWithinScrapeRange(postedValue, scrapeDateFilter) {
+  if (!scrapeDateFilter || scrapeDateFilter === 'all') return true
+
+  const cutoff = getScrapeCutoff(scrapeDateFilter)
+  if (!cutoff) return true
+
+  const date = parsePostedDate(postedValue)
+  if (!date) return false
+
+  return date >= cutoff
+}
+
+export function isJobWithinScrapeRange(job, scrapeDateFilter) {
+  if (!scrapeDateFilter || scrapeDateFilter === 'all') return true
+
+  const cutoff = getScrapeCutoff(scrapeDateFilter)
+  if (!cutoff) return true
+
+  const date = resolveJobPostedDate(job)
+  if (!date) return false
+
+  return date >= cutoff
+}
+
+export function areAllJobsOlderThanScrapeRange(jobs, scrapeDateFilter) {
+  if (!scrapeDateFilter || scrapeDateFilter === 'all') return false
+  if (jobs.length === 0) return false
+
+  const withDates = jobs.filter((job) => resolveJobPostedDate(job))
+  if (withDates.length === 0) return false
+
+  return withDates.every((job) => !isJobWithinScrapeRange(job, scrapeDateFilter))
+}
+
+export function filterJobsByScrapeRange(jobs, scrapeDateFilter) {
+  if (!scrapeDateFilter || scrapeDateFilter === 'all') return jobs
+
+  return jobs.filter((job) => isJobWithinScrapeRange(job, scrapeDateFilter))
+}
+
 function isWithinDisplayRange(postedDate, filter) {
   if (filter === 'all') return true
   const date = parsePostedDate(postedDate)
@@ -128,9 +212,19 @@ function isWithinDisplayRange(postedDate, filter) {
   return date >= cutoff
 }
 
-function compareDates(a, b, direction) {
-  const dateA = parsePostedDate(a)?.getTime() ?? 0
-  const dateB = parsePostedDate(b)?.getTime() ?? 0
+function getJobPostedTimestamp(job) {
+  const date = resolveJobPostedDate(job)
+  return date?.getTime() ?? 0
+}
+
+function compareJobsByPostedDate(a, b, direction) {
+  const dateA = getJobPostedTimestamp(a)
+  const dateB = getJobPostedTimestamp(b)
+
+  if (dateA === 0 && dateB === 0) return 0
+  if (dateA === 0) return 1
+  if (dateB === 0) return -1
+
   return direction === 'asc' ? dateA - dateB : dateB - dateA
 }
 
@@ -166,34 +260,16 @@ export function containsTerm(text, term) {
   return pattern.test(normalizedText)
 }
 
-function titleSignals(title) {
-  const text = normalizeMatchText(title)
-  return {
-    ios:
-      containsTerm(title, 'ios') ||
-      /\b(swift|iphone|ipad|xcode)\b/.test(text),
-    android:
-      containsTerm(title, 'android') ||
-      /\b(kotlin|jetpack)\b/.test(text),
-  }
-}
-
 function scoreKeywordMatch(title, keyword) {
   const words = keywordWords(keyword)
-  const primary = words[0]
-  const signals = titleSignals(title)
-  if (!primary) return 0
+  const signals = extractTitleSignals(keyword)
+  if (signals.length === 0) return 0
 
-  const primaryMatches =
-    containsTerm(title, primary) ||
-    (primary === 'ios' && signals.ios) ||
-    (primary === 'android' && signals.android)
-
-  if (!primaryMatches) return 0
+  if (!signals.some((signal) => containsTerm(title, signal))) return 0
 
   let score = 10
-  for (let i = 1; i < words.length; i += 1) {
-    if (containsTerm(title, words[i])) score += 1
+  for (const word of words) {
+    if (containsTerm(title, word)) score += 1
   }
   return score
 }
@@ -213,20 +289,9 @@ export function inferKeywordFromTitle(title, availableKeywords = []) {
   return bestMatch
 }
 
-export function matchesKeywordFilter(
-  job,
-  filterKeyword,
-  availableKeywords = []
-) {
+export function matchesKeywordFilter(job, filterKeyword) {
   if (!filterKeyword || filterKeyword === 'all') return true
-
-  const filter = normalizeMatchText(filterKeyword)
-  const jobKeyword = normalizeMatchText(getJobKeyword(job, availableKeywords))
-
-  if (jobKeyword && jobKeyword === filter) return true
-
-  const primaryTerm = keywordWords(filterKeyword)[0]
-  return primaryTerm ? containsTerm(job.title, primaryTerm) : false
+  return matchesSearchKeyword(job, filterKeyword)
 }
 
 export function resolveKeywordFilter(filterKeyword, availableKeywords = []) {
@@ -240,7 +305,7 @@ export function resolveKeywordFilter(filterKeyword, availableKeywords = []) {
   return match ?? 'all'
 }
 
-function keywordMatchesTitle(title, keyword) {
+export function keywordMatchesTitle(title, keyword) {
   return scoreKeywordMatch(title, keyword) > 0
 }
 
@@ -269,11 +334,31 @@ export function getJobKeyword(job, availableKeywords = []) {
   return stored
 }
 
+export function jobSearchKeyword(job) {
+  return String(job.searchKeyword ?? job.keyword ?? '').trim()
+}
+
+export function matchesSearchKeyword(job, keyword) {
+  if (!keyword) return false
+  return normalizeMatchText(jobSearchKeyword(job)) === normalizeMatchText(keyword)
+}
+
 export function enrichJobKeywords(jobs, availableKeywords = []) {
-  return jobs.map((job) => ({
-    ...job,
-    keyword: getJobKeyword(job, availableKeywords),
-  }))
+  return jobs.map((job) => {
+    const searchKeyword = canonicalSearchKeyword(
+      jobSearchKeyword(job),
+      availableKeywords
+    )
+    return {
+      ...job,
+      searchKeyword,
+      keyword: searchKeyword,
+    }
+  })
+}
+
+export function countJobsBySearchKeyword(jobs, keyword) {
+  return jobs.filter((job) => matchesSearchKeyword(job, keyword)).length
 }
 
 export function countJobsByKeyword(jobs, keyword, availableKeywords = []) {
@@ -327,6 +412,11 @@ export function filterAndSortJobs(jobs, filters) {
   const companyLower = company.trim().toLowerCase()
 
   let result = jobs.filter((job) => {
+    const searchKeyword = jobSearchKeyword(job)
+
+    if (searchKeyword && !keywordMatchesTitle(job.title, searchKeyword)) {
+      return false
+    }
     if (searchLower && !job.title?.toLowerCase().includes(searchLower)) {
       return false
     }
@@ -338,11 +428,11 @@ export function filterAndSortJobs(jobs, filters) {
     }
     if (
       keyword !== 'all' &&
-      !matchesKeywordFilter(job, keyword, availableKeywords)
+      !matchesKeywordFilter(job, keyword)
     ) {
       return false
     }
-    if (!isWithinDisplayRange(job.postedDate, dateFilter)) {
+    if (!isWithinDisplayRange(resolveJobPostedDate(job), dateFilter)) {
       return false
     }
     if (!matchesWorkTypeFilter(job, workType)) {
@@ -361,7 +451,7 @@ export function filterAndSortJobs(jobs, filters) {
 
   if (sortField === 'date') {
     result = [...result].sort((a, b) =>
-      compareDates(a.postedDate, b.postedDate, sortDirection)
+      compareJobsByPostedDate(a, b, sortDirection)
     )
   } else if (sortField === 'company') {
     result = [...result].sort((a, b) =>

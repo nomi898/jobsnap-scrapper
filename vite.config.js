@@ -58,14 +58,31 @@ function scraperApiPlugin() {
           const body = raw ? JSON.parse(raw) : {}
           const jobs = Array.isArray(body.jobs) ? body.jobs : []
           const session = resolveRequestLiAtCookie(body.liAtCookie)
-          const { jobs: enriched, enrichment } = await enrichJobsWithCompanySize(
-            jobs,
-            session.cookie
-          )
 
           res.statusCode = 200
-          res.setHeader('Content-Type', 'application/json')
-          res.end(JSON.stringify({ jobs: enriched, enrichment }))
+          res.setHeader('Content-Type', 'text/event-stream')
+          res.setHeader('Cache-Control', 'no-cache')
+          res.setHeader('Connection', 'keep-alive')
+
+          const writeEvent = (payload) => {
+            res.write(`data: ${JSON.stringify(payload)}\n\n`)
+          }
+
+          try {
+            const { jobs: enriched, enrichment } = await enrichJobsWithCompanySize(
+              jobs,
+              session.cookie,
+              (update) => writeEvent({ ...update, phase: 'enriching' })
+            )
+
+            writeEvent({ done: true, jobs: enriched, enrichment })
+          } catch (err) {
+            writeEvent({
+              error: 'Company size enrichment failed',
+              details: err instanceof Error ? err.message : 'Unknown error',
+            })
+          }
+          res.end()
         } catch (err) {
           res.statusCode = 500
           res.setHeader('Content-Type', 'application/json')
@@ -121,14 +138,20 @@ function scraperApiPlugin() {
           const session = resolveRequestLiAtCookie(body.liAtCookie)
           const { status, data } = await scrapeJobs({
             keywords: body.keywords,
-            pagesPerKeyword: body.pagesPerKeyword,
             startPage: body.startPage,
+            startOffset: body.startOffset,
+            maxPages: body.maxPages,
             dateFilter: body.dateFilter,
             geoId: body.geoId ?? '92000000',
             workTypeFilter: body.workTypeFilter ?? 'all',
             fetchCompanySize: body.fetchCompanySize !== false,
             liAtCookie: session.cookie,
             sessionSource: session.source,
+            scrapeRunId: body.scrapeRunId,
+            pageIndex: body.pageIndex,
+            previousKeyword: body.previousKeyword,
+            keywordIndex: body.keywordIndex,
+            keywordCount: body.keywordCount,
           })
 
           res.statusCode = status

@@ -1,3 +1,4 @@
+import * as cheerio from 'cheerio'
 import { cleanLinkedInUrl } from './linkedinHtmlScraper.js'
 import {
   fetchLinkedInPage,
@@ -6,14 +7,41 @@ import {
 } from './linkedinHttp.js'
 
 const REQUEST_TIMEOUT_MS = 15000
-const COMPANY_FETCH_CONCURRENCY = 4
-const COMPANY_FETCH_DELAY_MS = 300
+const COMPANY_FETCH_CONCURRENCY = 1
+const COMPANY_FETCH_DELAY_MS = 4000
+const COMPANY_FETCH_COOLDOWN_EVERY = 10
+const COMPANY_FETCH_COOLDOWN_MIN_MS = 20000
+const COMPANY_FETCH_COOLDOWN_MAX_MS = 30000
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-export function parseCompanySizeFromHtml(html) {
+function randomBetween(min, max) {
+  return min + Math.floor(Math.random() * (max - min + 1))
+}
+
+function cleanText(value) {
+  return String(value ?? '')
+    .trim()
+    .replace(/\s+/g, ' ')
+}
+
+function readAboutField($, testId) {
+  return cleanText($(`[data-test-id="${testId}"]`).find('dd').first().text())
+}
+
+function isPlausibleEmployeeCount(value) {
+  const count = Number(String(value ?? '').replace(/,/g, ''))
+  return Number.isFinite(count) && count > 1
+}
+
+function normalizeSizeLabel(label) {
+  const text = cleanText(label).replace(/\s*employees?\s*/i, '')
+  return text && /\d/.test(text) ? text : null
+}
+
+export function parseCompanySizeCountFromHtml(html) {
   const text = String(html ?? '')
   const jsonPatterns = [
     /"employeeCount":(\d+)/,
@@ -26,17 +54,66 @@ export function parseCompanySizeFromHtml(html) {
     const match = text.match(pattern)
     if (match) {
       const value = Number(match[1])
-      if (Number.isFinite(value) && value > 0) return value
+      if (isPlausibleEmployeeCount(value)) return value
     }
   }
 
   const textMatch = text.match(/([\d,]+)\+?\s+employees/i)
   if (textMatch) {
     const value = Number(textMatch[1].replace(/,/g, ''))
-    if (Number.isFinite(value) && value > 0) return value
+    if (isPlausibleEmployeeCount(value)) return value
   }
 
   return null
+}
+
+export function parseCompanySizeLabelFromHtml(html) {
+  const $ = cheerio.load(String(html ?? ''))
+
+  const aboutLabel = normalizeSizeLabel(readAboutField($, 'about-us__size'))
+  if (aboutLabel) return aboutLabel
+
+  const summaryCandidates = [
+    $('.org-top-card-summary-info-list__info-item'),
+    $('.org-about-company-module__company-size-definition-text'),
+    $('[class*="company-size"]'),
+  ]
+
+  for (const nodes of summaryCandidates) {
+    let found = null
+    nodes.each((_index, element) => {
+      if (found) return
+      const text = cleanText($(element).text())
+      const normalized = normalizeSizeLabel(text)
+      if (normalized) found = normalized
+    })
+    if (found) return found
+  }
+
+  const bandMatch = String(html ?? '').match(
+    /(\d[\d,]*\s*-\s*\d[\d,]*\+?|\d[\d,]*\+)\s+employees/i
+  )
+  if (bandMatch) {
+    return normalizeSizeLabel(bandMatch[0])
+  }
+
+  return null
+}
+
+/** @returns {{ count: number|null, label: string|null }} */
+export function parseCompanySizeFromHtml(html) {
+  const count = parseCompanySizeCountFromHtml(html)
+  const label = parseCompanySizeLabelFromHtml(html)
+
+  if (count != null) {
+    return { count, label: label ?? null }
+  }
+
+  if (label) {
+    return { count: null, label }
+  }
+
+  return { count: null, label: null }
 }
 
 async function fetchCompanyPage(companyUrl, liAtCookie, { forceGuest = false } = {}) {
@@ -54,46 +131,73 @@ async function fetchCompanyPage(companyUrl, liAtCookie, { forceGuest = false } =
   return { url, page }
 }
 
+function parseSizeFromPage(page) {
+  if (!page?.html) return { count: null, label: null }
+  return parseCompanySizeFromHtml(page.html)
+}
+
 /**
  * Logged-in company pages often omit employeeCount in HTML.
  * If session loads but size is missing, retry as guest (public page).
  */
 async function fetchCompanySize(companyUrl, liAtCookie) {
   const { url, page } = await fetchCompanyPage(companyUrl, liAtCookie)
-  if (!url || !page) return { size: null, source: null }
+  if (!url || !page) return { count: null, label: null, source: null }
 
   if (page.error || isBlockedLinkedInResponse(page.html, page.status)) {
     const guest = await fetchCompanyPage(companyUrl, liAtCookie, { forceGuest: true })
-    if (!guest.page || guest.page.error) return { size: null, source: null }
-    if (isBlockedLinkedInResponse(guest.page.html, guest.page.status)) {
-      return { size: null, source: null }
+    if (!guest.page || guest.page.error) {
+      return { count: null, label: null, source: null }
     }
-    const size = parseCompanySizeFromHtml(guest.page.html)
-    return { size, source: size != null ? 'guest' : null }
+    if (isBlockedLinkedInResponse(guest.page.html, guest.page.status)) {
+      return { count: null, label: null, source: null }
+    }
+    const parsed = parseSizeFromPage(guest.page)
+    const hasSize = parsed.count != null || parsed.label != null
+    return { ...parsed, source: hasSize ? 'guest' : null }
   }
 
-  let size = parseCompanySizeFromHtml(page.html)
+  let parsed = parseSizeFromPage(page)
   let source = page.usedCookie ? 'session' : 'guest'
 
-  if (size == null && page.usedCookie) {
+  if (parsed.count == null && parsed.label == null && page.usedCookie) {
     const guest = await fetchCompanyPage(companyUrl, liAtCookie, { forceGuest: true })
     if (
       guest.page &&
       !guest.page.error &&
       !isBlockedLinkedInResponse(guest.page.html, guest.page.status)
     ) {
-      const guestSize = parseCompanySizeFromHtml(guest.page.html)
-      if (guestSize != null) {
-        return { size: guestSize, source: 'guest-fallback' }
+      const guestParsed = parseSizeFromPage(guest.page)
+      if (guestParsed.count != null || guestParsed.label != null) {
+        return { ...guestParsed, source: 'guest-fallback' }
       }
     }
   }
 
-  return { size, source: size != null ? source : null }
+  const hasSize = parsed.count != null || parsed.label != null
+  return { ...parsed, source: hasSize ? source : null }
 }
 
-export async function enrichJobsWithCompanySize(jobs, liAtCookie) {
+function applyCompanySizePatch(jobs, companyUrl, result) {
+  return jobs.map((job) => {
+    if (cleanLinkedInUrl(job.companyUrl) !== companyUrl) return job
+
+    return {
+      ...job,
+      companySizeCount: result.count ?? job.companySizeCount ?? null,
+      companySizeLabel: result.label ?? job.companySizeLabel ?? null,
+      ...(result.count != null
+        ? { companySize: result.count }
+        : result.label
+          ? { companySize: result.label }
+          : {}),
+    }
+  })
+}
+
+export async function enrichJobsWithCompanySize(jobs, liAtCookie, onProgress) {
   const sizeByCompanyUrl = new Map()
+  let workingJobs = jobs
   const enrichment = {
     attempted: 0,
     loaded: 0,
@@ -123,25 +227,61 @@ export async function enrichJobsWithCompanySize(jobs, liAtCookie) {
     )
 
     for (const [companyUrl, result] of results) {
-      if (result.size == null) continue
+      const hasSize = result.count != null || result.label != null
 
-      sizeByCompanyUrl.set(companyUrl, result.size)
-      enrichment.loaded += 1
+      if (hasSize) {
+        sizeByCompanyUrl.set(companyUrl, {
+          companySizeCount: result.count,
+          companySizeLabel: result.label,
+        })
+        workingJobs = applyCompanySizePatch(workingJobs, companyUrl, result)
+        enrichment.loaded += 1
 
-      if (result.source === 'session') enrichment.viaSession += 1
-      else if (result.source === 'guest-fallback') enrichment.viaGuestFallback += 1
-      else if (result.source === 'guest') enrichment.viaGuest += 1
+        if (result.source === 'session') enrichment.viaSession += 1
+        else if (result.source === 'guest-fallback') enrichment.viaGuestFallback += 1
+        else if (result.source === 'guest') enrichment.viaGuest += 1
+      }
+
+      onProgress?.({
+        jobs: workingJobs,
+        completed: Math.min(index + results.length, uniqueUrls.length),
+        total: uniqueUrls.length,
+        companyUrl,
+        loaded: enrichment.loaded,
+        enrichment: { ...enrichment },
+      })
     }
 
     if (index + COMPANY_FETCH_CONCURRENCY < uniqueUrls.length) {
-      await sleep(COMPANY_FETCH_DELAY_MS)
+      const completed = index + COMPANY_FETCH_CONCURRENCY
+      if (completed % COMPANY_FETCH_COOLDOWN_EVERY === 0) {
+        await sleep(
+          randomBetween(
+            COMPANY_FETCH_COOLDOWN_MIN_MS,
+            COMPANY_FETCH_COOLDOWN_MAX_MS
+          )
+        )
+      } else {
+        await sleep(COMPANY_FETCH_DELAY_MS)
+      }
     }
   }
 
   const enrichedJobs = jobs.map((job) => {
     const companyUrl = cleanLinkedInUrl(job.companyUrl)
-    const companySize = companyUrl ? sizeByCompanyUrl.get(companyUrl) ?? null : null
-    return companySize == null ? job : { ...job, companySize }
+    const patch = companyUrl ? sizeByCompanyUrl.get(companyUrl) : null
+    if (!patch) return job
+
+    return {
+      ...job,
+      companySizeCount: patch.companySizeCount ?? job.companySizeCount ?? null,
+      companySizeLabel: patch.companySizeLabel ?? job.companySizeLabel ?? null,
+      ...(patch.companySizeCount != null
+        ? { companySize: patch.companySizeCount }
+        : patch.companySizeLabel
+          ? { companySize: patch.companySizeLabel }
+          : {}),
+    }
   })
 
   return { jobs: enrichedJobs, enrichment }

@@ -1,4 +1,5 @@
 import { cleanLinkedInUrl, cleanText } from './cleanJobFields.js'
+import { sanitizeEmployeeCount } from './companySize.js'
 
 export function extractCompanyId(companyUrl) {
   const url = cleanLinkedInUrl(companyUrl)
@@ -202,7 +203,9 @@ export function mergeToApifyJob(job = {}, details = {}, company = {}) {
   const companyId = job.companyId ?? extractCompanyId(companyUrl)
   const jsonLd = details.jsonLd ?? {}
   const descExtras = parseDescriptionExtras(details.description)
-  const companySizeNum = company.companySize ?? job.companySizeCount ?? job.companySize
+  const companySizeNum = sanitizeEmployeeCount(
+    company.companySize ?? job.companySizeCount ?? job.companySize
+  )
   const companySizeBand =
     job.companySizeBand ??
     formatCompanySizeBand(companySizeNum, company.companySizeLabel)
@@ -222,9 +225,7 @@ export function mergeToApifyJob(job = {}, details = {}, company = {}) {
     company: cleanText(details.company || job.company),
     companyId,
     companySize: companySizeBand,
-    companySizeCount: Number.isFinite(Number(companySizeNum))
-      ? Number(companySizeNum)
-      : null,
+    companySizeCount: companySizeNum,
     location,
     country,
     city,

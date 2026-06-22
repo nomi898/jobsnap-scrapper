@@ -1,5 +1,11 @@
 import * as cheerio from 'cheerio'
-import { LINKEDIN_WORK_TYPE } from '../src/constants.js'
+import {
+  LINKEDIN_BATCH_SIZE,
+  LINKEDIN_WORK_TYPE,
+  PAGE_DELAY_MAX_MS,
+  PAGE_DELAY_MIN_MS,
+  SAFETY_MAX_PAGES,
+} from '../src/constants.js'
 import {
   extractCompanyId,
   parseLocationParts,
@@ -48,16 +54,19 @@ const DATE_FILTER_MAP = {
   all: '',
 }
 
-export const JOBS_PER_PAGE = 10
-export const PAGE_DELAY_MS = 500
+export const JOBS_PER_PAGE = LINKEDIN_BATCH_SIZE
 const REQUEST_TIMEOUT_MS = 20000
 const MIN_HTML_LENGTH = 1000
-const FETCH_RETRIES = 2
+const MAX_CONSECUTIVE_EMPTY_PAGES = 5
 const GUEST_JOBS_API_URL =
   'https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search'
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function randomBetween(min, max) {
+  return min + Math.floor(Math.random() * (max - min + 1))
 }
 
 function cleanText(value) {
@@ -79,6 +88,7 @@ export function cleanLinkedInUrl(url) {
   return String(url ?? '')
     .replace(/https?:\/\/(?:[a-z]{2,3}\.)?linkedin\.com/i, 'https://www.linkedin.com')
     .split('?')[0]
+    .replace(/\/+$/, '')
     .trim()
 }
 
@@ -124,15 +134,19 @@ export function buildSearchUrl({
     url.searchParams.set('f_WT', workType)
   }
   url.searchParams.set('start', String(start ?? 0))
+  // Max per HTTP call — scraper loops start=0,25,50… until LinkedIn returns no jobs
+  url.searchParams.set('count', String(LINKEDIN_BATCH_SIZE))
   return url.href
 }
 
-async function fetchSearchPage(url) {
+async function fetchSearchPage(url, { diagnostics, requestContext } = {}) {
   // jobs-guest search API is for anonymous access — li_at often breaks it
   const page = await fetchLinkedInPage(url, {
     referer: 'https://www.linkedin.com/jobs/search/',
     timeoutMs: REQUEST_TIMEOUT_MS,
     forceGuest: true,
+    diagnostics,
+    requestContext,
   })
 
   if (page.error) {
@@ -152,30 +166,24 @@ async function fetchSearchPage(url) {
   }
 }
 
-async function fetchSearchPageWithRetry(url, liAtCookie) {
-  let lastResult = {
-    html: '',
-    status: 0,
-    cookieRejected: false,
-    accessMode: undefined,
-  }
+function isFailedPage(html, status) {
+  return (
+    isBlockedLinkedInResponse(html, status) || isEmptyResponseHtml(html)
+  )
+}
 
-  for (let attempt = 0; attempt <= FETCH_RETRIES; attempt += 1) {
-    lastResult = await fetchSearchPage(url)
-
-    if (
-      !isBlockedLinkedInResponse(lastResult.html, lastResult.status) &&
-      !isEmptyResponseHtml(lastResult.html)
-    ) {
-      return lastResult
-    }
-
-    if (attempt < FETCH_RETRIES) {
-      await sleep(800 * (attempt + 1))
-    }
-  }
-
-  return lastResult
+async function fetchSearchPageOnce(
+  url,
+  { diagnostics, requestContext } = {}
+) {
+  return fetchSearchPage(url, {
+    diagnostics,
+    requestContext: {
+      ...requestContext,
+      retryAttempt: 0,
+      retryType: 'initial',
+    },
+  })
 }
 
 function pickText($scope, selectors) {
@@ -294,31 +302,34 @@ export function parseJobsFromHtml(html, keyword) {
 
 export async function scrapeKeywordPages({
   keyword,
-  pagesPerKeyword,
-  startPage,
+  startOffset = 0,
+  maxPages,
   dateFilter,
   geoId,
   workTypeFilter,
   liAtCookie,
-  pageDelayMs = PAGE_DELAY_MS,
+  diagnostics,
+  pageStartIndex = 1,
 }) {
-  const batchIndex = Math.max(0, (Number(startPage) || 1) - 1)
   const jobs = []
   let rateLimitedPages = 0
   let lastError = null
-  let lastPageJobCount = 0
   let pagesFetched = 0
   let hitEndOfResults = false
   let accessMode
   let cookieRejected = false
+  let offset = Math.max(0, Number(startOffset) || 0)
+  let stoppedEarly = false
+  let consecutiveEmptyPages = 0
+  const pageLimit =
+    maxPages != null ? Math.max(1, Number(maxPages) || 1) : SAFETY_MAX_PAGES
 
-  for (let page = 0; page < pagesPerKeyword; page += 1) {
-    const start = (batchIndex * pagesPerKeyword + page) * JOBS_PER_PAGE
+  for (let page = 0; page < pageLimit; page += 1) {
     const url = buildSearchUrl({
       keyword,
       geoId,
       dateFilter,
-      start,
+      start: offset,
       workTypeFilter,
     })
 
@@ -326,7 +337,16 @@ export async function scrapeKeywordPages({
     let status
 
     try {
-      const pageResult = await fetchSearchPageWithRetry(url)
+      const pageNumber = pageStartIndex + page
+      const pageResult = await fetchSearchPageOnce(url, {
+        diagnostics,
+        requestContext: {
+          keyword,
+          pageNumber,
+          offset,
+          transition: pageNumber === 1 ? 'keyword-start' : 'page-progress',
+        },
+      })
       html = pageResult.html
       status = pageResult.status
       accessMode = pageResult.accessMode ?? accessMode
@@ -336,45 +356,59 @@ export async function scrapeKeywordPages({
       break
     }
 
-    if (isBlockedLinkedInResponse(html, status)) {
+    if (isFailedPage(html, status)) {
       rateLimitedPages += 1
       if (jobs.length === 0) {
         lastError = 'LinkedIn is rate limiting requests'
+        break
       }
-      break
-    }
-
-    if (isEmptyResponseHtml(html)) {
-      rateLimitedPages += 1
-      if (jobs.length === 0) {
-        lastError = 'LinkedIn returned an empty search page'
-      }
+      stoppedEarly = true
       break
     }
 
     const pageJobs = parseJobsFromHtml(html, keyword)
-    lastPageJobCount = pageJobs.length
 
     if (pageJobs.length === 0) {
-      hitEndOfResults = true
-      break
+      consecutiveEmptyPages += 1
+      offset += LINKEDIN_BATCH_SIZE
+
+      if (consecutiveEmptyPages >= MAX_CONSECUTIVE_EMPTY_PAGES) {
+        hitEndOfResults = true
+        console.log(
+          `[scraper] ${keyword}: stopped after ${MAX_CONSECUTIVE_EMPTY_PAGES} consecutive empty pages at offset ${offset - LINKEDIN_BATCH_SIZE}`
+        )
+        break
+      }
+
+      if (page + 1 < pageLimit) {
+        await sleep(randomBetween(PAGE_DELAY_MIN_MS, PAGE_DELAY_MAX_MS))
+      }
+      continue
     }
 
+    consecutiveEmptyPages = 0
     pagesFetched += 1
     jobs.push(...pageJobs)
+    offset += LINKEDIN_BATCH_SIZE
 
-    if (page < pagesPerKeyword - 1) {
-      await sleep(pageDelayMs)
+    if (page + 1 < pageLimit) {
+      await sleep(randomBetween(PAGE_DELAY_MIN_MS, PAGE_DELAY_MAX_MS))
     }
   }
 
-  const exhausted = rateLimitedPages === 0 && pagesFetched > 0 && hitEndOfResults
+  const exhausted =
+    !stoppedEarly && rateLimitedPages === 0 && pagesFetched > 0 && hitEndOfResults
+  const hasMore = !exhausted && !stoppedEarly && !hitEndOfResults
 
   return {
     jobs,
-    rateLimited: rateLimitedPages > 0,
+    rateLimited: rateLimitedPages > 0 || stoppedEarly,
     rateLimitedPages,
+    pagesFetched,
     exhausted,
+    hasMore,
+    nextOffset: offset,
+    stoppedEarly,
     error: jobs.length === 0 ? lastError : null,
     accessMode,
     cookieRejected,

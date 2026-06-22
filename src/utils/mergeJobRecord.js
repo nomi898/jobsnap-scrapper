@@ -12,6 +12,7 @@ import {
   parseLocationParts,
   toRemoteBoolean,
 } from './jobSchema.js'
+import { sanitizeEmployeeCount } from './companySize.js'
 
 const APIFY_FIELDS = [
   'companyId',
@@ -65,9 +66,17 @@ export function enrichJobListing(job) {
   const companyUrl = cleanLinkedInUrl(job.companyUrl)
   const location = cleanText(job.location)
   const { city, country } = parseLocationParts(location)
-  const rawSize = Number(job.companySizeCount ?? job.companySize)
+  const numericCompanySize =
+    typeof job.companySize === 'number'
+      ? job.companySize
+      : typeof job.companySize === 'string' &&
+          Number.isFinite(Number(job.companySize)) &&
+          !job.companySize.includes('-')
+        ? Number(job.companySize)
+        : null
   const companySizeCount =
-    Number.isFinite(rawSize) && rawSize > 0 ? rawSize : job.companySizeCount ?? null
+    sanitizeEmployeeCount(job.companySizeCount) ??
+    sanitizeEmployeeCount(numericCompanySize)
   const companySizeBand =
     (typeof job.companySize === 'string' &&
       /\d/.test(job.companySize) &&
@@ -104,6 +113,9 @@ export function normalizeJob(job) {
     job.postedDate ?? job.posted_date ?? job.postedDateAttr ?? job.date
   )
   const keyword = cleanText(job.keyword ?? job.keywordRaw ?? job.searchKeyword)
+  const searchKeyword = cleanText(
+    job.searchKeyword ?? job.keyword ?? job.keywordRaw
+  )
   const url = resolveJobUrl(job)
   const id =
     String(job.id ?? job.jobId ?? '').trim() ||
@@ -121,6 +133,7 @@ export function normalizeJob(job) {
     companySize: job.companySize ?? null,
     postedDate,
     keyword,
+    searchKeyword,
     url,
     ...pickDefinedFields(job, APIFY_FIELDS),
   }
@@ -137,7 +150,8 @@ export function mergeJobWithFetchedDetails(job, details, company) {
     ...merged,
     id: job.id || merged.id,
     url,
-    keyword: job.keyword,
+    keyword: job.searchKeyword ?? job.keyword,
+    searchKeyword: job.searchKeyword ?? job.keyword,
     workplace: job.workplace ?? merged.workplace,
     workType: job.workType ?? merged.workType,
     postedDate: job.postedDate || merged.postedDate,
