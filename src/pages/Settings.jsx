@@ -67,6 +67,10 @@ export default function Settings() {
       return 'Enter a custom LinkedIn geo ID.'
     }
 
+    if (form.fetchCompanySize !== false && !normalizeLiAtCookie(form.liAtCookie)) {
+      return 'Add your li_at cookie to fetch company sizes from LinkedIn company profiles.'
+    }
+
     return null
   }
 
@@ -236,7 +240,7 @@ export default function Settings() {
                       </FieldHint>
                     </span>
                     <span className="settings-toggle-sub">
-                      Employee count from company profiles
+                      Employee count from company profiles. Requires li_at cookie.
                     </span>
                   </span>
                 </label>
@@ -249,8 +253,10 @@ export default function Settings() {
                     <span className="field-optional">optional</span>
                     <FieldHint label="LinkedIn li_at cookie help">
                       Optional — Settings or <code>LI_AT_COOKIE</code> in{' '}
-                      <code>.env</code> (Settings wins). Company pages only, not job
-                      search. Paste the value from DevTools (not <code>li_at=</code>).
+                      <code>.env</code> (Settings wins). If provided, JobSnap
+                      tries authenticated job search and falls back to guest
+                      search if LinkedIn rejects the session. Paste the value
+                      from DevTools (not <code>li_at=</code>).
                     </FieldHint>
                   </span>
                 </span>

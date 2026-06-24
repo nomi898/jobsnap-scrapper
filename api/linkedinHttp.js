@@ -96,6 +96,9 @@ export function isBlockedLinkedInResponse(html, status) {
   const lower = text.toLowerCase()
   return (
     lower.includes('authwall') ||
+    lower.includes('linkedin login, sign in') ||
+    lower.includes('/uas/login') ||
+    lower.includes('session_redirect') ||
     lower.includes('too many requests') ||
     lower.includes('receiving too many requests')
   )
@@ -108,6 +111,19 @@ function recordLinkedInRequest(diagnostics, event) {
       ...event,
       globalRequestNumber: linkedinRequestCount,
     })
+  }
+}
+
+function describeFetchError(err) {
+  const message = err instanceof Error ? err.message : String(err)
+  return {
+    error: message,
+    errorName: err instanceof Error ? err.name : typeof err,
+    errorMessage: message,
+    errorCause:
+      err instanceof Error && err.cause ?
+        err.cause instanceof Error ? err.cause.message : String(err.cause)
+      : null,
   }
 }
 
@@ -150,6 +166,9 @@ export async function fetchLinkedInPage(url, options = {}) {
       const blocked = isBlockedLinkedInResponse(html, response.status)
       recordLinkedInRequest(diagnostics, {
         url,
+        requestUrl: url,
+        responseUrl: response.url,
+        redirected: response.redirected,
         status: response.status,
         blocked,
         accessMode: LINKEDIN_ACCESS.guest,
@@ -159,14 +178,18 @@ export async function fetchLinkedInPage(url, options = {}) {
       })
       return { response, html, blocked }
     } catch (err) {
+      const errorDetails = describeFetchError(err)
       recordLinkedInRequest(diagnostics, {
         url,
+        requestUrl: url,
+        responseUrl: null,
+        redirected: false,
         status: 0,
         blocked: false,
         accessMode: LINKEDIN_ACCESS.guest,
         sessionSource: 'none',
         cookieRejected: false,
-        error: err instanceof Error ? err.message : String(err),
+        ...errorDetails,
         requestContext,
       })
       throw err
@@ -195,6 +218,9 @@ export async function fetchLinkedInPage(url, options = {}) {
       const blocked = isBlockedLinkedInResponse(html, response.status)
       recordLinkedInRequest(diagnostics, {
         url,
+        requestUrl: url,
+        responseUrl: response.url,
+        redirected: response.redirected,
         status: response.status,
         blocked,
         accessMode: LINKEDIN_ACCESS.session,
@@ -204,14 +230,18 @@ export async function fetchLinkedInPage(url, options = {}) {
       })
       return { response, html, blocked }
     } catch (err) {
+      const errorDetails = describeFetchError(err)
       recordLinkedInRequest(diagnostics, {
         url,
+        requestUrl: url,
+        responseUrl: null,
+        redirected: false,
         status: 0,
         blocked: false,
         accessMode: LINKEDIN_ACCESS.session,
         sessionSource,
         cookieRejected: false,
-        error: err instanceof Error ? err.message : String(err),
+        ...errorDetails,
         requestContext,
       })
       throw err
@@ -226,6 +256,10 @@ export async function fetchLinkedInPage(url, options = {}) {
       return {
         html: result.html,
         status: result.response.status,
+        requestUrl: url,
+        finalUrl: result.response.url,
+        responseUrl: result.response.url,
+        redirected: result.response.redirected,
         accessMode: LINKEDIN_ACCESS.guest,
         sessionSource: 'none',
         cookieRejected: false,
@@ -234,8 +268,18 @@ export async function fetchLinkedInPage(url, options = {}) {
     }
 
     let result = await attemptSession()
+    const sessionAttempt = {
+      status: result.response.status,
+      finalUrl: result.response.url,
+      responseUrl: result.response.url,
+      redirected: result.response.redirected,
+      blocked: result.blocked,
+      htmlLength: String(result.html ?? '').length,
+      accessMode: LINKEDIN_ACCESS.session,
+      sessionSource,
+    }
     let accessMode = LINKEDIN_ACCESS.session
-    let cookieRejected = false
+    let cookieRejected = result.blocked
     let activeSource = sessionSource
 
     if (fallbackToGuest && result.blocked) {
@@ -248,10 +292,16 @@ export async function fetchLinkedInPage(url, options = {}) {
     return {
       html: result.html,
       status: result.response.status,
+      requestUrl: url,
+      finalUrl: result.response.url,
+      responseUrl: result.response.url,
+      redirected: result.response.redirected,
       accessMode,
       sessionSource: activeSource,
       cookieRejected,
-      usedCookie: !cookieRejected,
+      fallbackReason: cookieRejected ? 'authwall' : null,
+      usedCookie: accessMode === LINKEDIN_ACCESS.session,
+      sessionAttempt,
     }
   } catch (err) {
     if (requestedMode === LINKEDIN_ACCESS.session && fallbackToGuest) {
@@ -260,32 +310,47 @@ export async function fetchLinkedInPage(url, options = {}) {
         return {
           html: result.html,
           status: result.response.status,
+          requestUrl: url,
+          finalUrl: result.response.url,
+          responseUrl: result.response.url,
+          redirected: result.response.redirected,
           accessMode: LINKEDIN_ACCESS.guest,
           sessionSource: 'none',
           cookieRejected: true,
+          fallbackReason: 'request-error',
           usedCookie: false,
         }
       } catch (retryErr) {
         const message =
           retryErr instanceof Error ? retryErr.message : String(retryErr)
+        const errorDetails = describeFetchError(retryErr)
         return {
+          ...errorDetails,
           error:
             message.includes('abort') ?
               'Request timed out'
             : message.includes('redirect') ?
               'LinkedIn rejected the li_at cookie. Clear it in Settings or paste only the value (not li_at=).'
             : message,
+          requestUrl: url,
+          responseUrl: null,
+          redirected: false,
         }
       }
     }
 
     const message = err instanceof Error ? err.message : String(err)
+    const errorDetails = describeFetchError(err)
     return {
+      ...errorDetails,
       error:
         message.includes('abort') ? 'Request timed out'
         : message.includes('redirect') ?
           'LinkedIn rejected the li_at cookie. Paste only the value from DevTools, without li_at=.'
         : message,
+      requestUrl: url,
+      responseUrl: null,
+      redirected: false,
     }
   }
 }

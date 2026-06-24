@@ -19,6 +19,7 @@ export const POST_BLOCK_PAGE_DELAY_MAX_MS = 45000
 export const CLIENT_RATE_LIMIT_RETRY_MAX = 3
 /** Throttle: longer pause after sustained scraping to stay below block thresholds */
 export const SCRAPE_RUN_COOLDOWN_EVERY = 25
+export const POST_BLOCK_SCRAPE_RUN_COOLDOWN_EVERY = 15
 export const SCRAPE_RUN_COOLDOWN_MIN_MS = 120000
 export const SCRAPE_RUN_COOLDOWN_MAX_MS = 300000
 /** Throttle: pause and retry when LinkedIn blocks mid-scrape (ms) */
@@ -28,6 +29,8 @@ export const RATE_LIMIT_RECOVERY_ATTEMPTS = 8
 /** Throttle: wait before retrying keywords that were rate-limited once */
 export const RATE_LIMITED_KEYWORD_RETRY_MIN_MS = 120000
 export const RATE_LIMITED_KEYWORD_RETRY_MAX_MS = 180000
+export const AUTHWALL_KEYWORD_RETRY_MIN_MS = 300000
+export const AUTHWALL_KEYWORD_RETRY_MAX_MS = 600000
 /** Throttle: random delay between keywords (ms) */
 export const KEYWORD_DELAY_MIN_MS = 15000
 export const KEYWORD_DELAY_MAX_MS = 20000

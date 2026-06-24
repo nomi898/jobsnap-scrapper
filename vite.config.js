@@ -1,7 +1,10 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { enrichJobsWithCompanySize } from './api/companySize.js'
-import { fetchJobAndCompanyDetails } from './api/fetch-job-details.js'
+import {
+  fetchCompanyDetailsForModal,
+  fetchJobAndCompanyDetails,
+} from './api/fetch-job-details.js'
 import { getLinkedInAccessInfo } from './api/linkedin-access.js'
 import { resolveRequestLiAtCookie } from './api/linkedinHttp.js'
 import { scrapeJobs } from './api/scrapeJobs.js'
@@ -109,6 +112,43 @@ function scraperApiPlugin() {
             jobUrl: body.jobUrl ?? body.url,
             companyUrl: body.companyUrl,
             liAtCookie: session.cookie,
+            fallbackCompany: body.fallbackCompany,
+            includeCompany: body.includeCompany !== false,
+          })
+
+          res.statusCode = status
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify(data))
+        } catch (err) {
+          console.info('[company-debug] vite fetch-company-details error', {
+            error: err instanceof Error ? err.message : String(err),
+            errorName: err instanceof Error ? err.name : typeof err,
+          })
+          res.statusCode = 500
+          res.setHeader('Content-Type', 'application/json')
+          res.end(
+            JSON.stringify({
+              error: 'Job details request failed',
+              details: err instanceof Error ? err.message : 'Unknown error',
+            })
+          )
+        }
+      })
+
+      server.middlewares.use('/api/fetch-company-details', async (req, res, next) => {
+        if (req.method !== 'POST') {
+          next()
+          return
+        }
+
+        try {
+          const raw = await readRequestBody(req)
+          const body = raw ? JSON.parse(raw) : {}
+          const session = resolveRequestLiAtCookie(body.liAtCookie)
+          const { status, data } = await fetchCompanyDetailsForModal({
+            companyUrl: body.companyUrl,
+            liAtCookie: session.cookie,
+            fallbackCompany: body.fallbackCompany,
           })
 
           res.statusCode = status
@@ -119,7 +159,7 @@ function scraperApiPlugin() {
           res.setHeader('Content-Type', 'application/json')
           res.end(
             JSON.stringify({
-              error: 'Job details request failed',
+              error: 'Company details request failed',
               details: err instanceof Error ? err.message : 'Unknown error',
             })
           )

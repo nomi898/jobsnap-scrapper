@@ -10,7 +10,9 @@ import {
   normalizeJob,
   parseKeywordList,
 } from '../utils/fetchJobs'
+import { resolveJobUrl } from '../utils/cleanJobFields'
 import { filterJobsByScrapeRange } from '../utils/filterJobs'
+import { normalizeLiAtCookie } from '../utils/linkedinCookie'
 import { loadFromStorage, saveToStorage } from '../utils/storage'
 
 const DEFAULT_PAGINATION = { batchesLoaded: 0, hasMore: false }
@@ -260,6 +262,7 @@ export function useJobs() {
                   runRequestCount,
                   retryCount,
                   retryKeywords,
+                  hasAuthwall,
                 } = progress
 
                 setFetchProgress({
@@ -281,6 +284,7 @@ export function useJobs() {
                   runRequestCount,
                   retryCount,
                   retryKeywords,
+                  hasAuthwall,
                 })
                 if (partialJobs?.length > 0) {
                   const scopedPartialJobs = filterJobsByScrapeRange(
@@ -424,6 +428,10 @@ export function useJobs() {
   const backfillCompanySizes = useCallback(
     async (settings) => {
       if (settings.fetchCompanySize === false) return
+      if (!normalizeLiAtCookie(settings.liAtCookie)) {
+        setNotice('Add your li_at cookie in Settings to fetch company sizes.')
+        return
+      }
       if (fetchInFlight.current || enrichInFlight.current) return
       if (jobs.length === 0 || !jobs.some(jobNeedsCompanySize)) return
 
@@ -456,9 +464,15 @@ export function useJobs() {
 
   const saveJobDetails = useCallback((job, details, company) => {
     const merged = mergeJobWithFetchedDetails(job, details, company ?? {})
+    const originalUrl = resolveJobUrl(job)
+    const mergedUrl = resolveJobUrl(merged)
     setJobs((previous) => {
       const next = previous.map((entry) =>
-        entry.id === merged.id ? merged : entry
+        entry.id === merged.id ||
+        (mergedUrl && resolveJobUrl(entry) === mergedUrl) ||
+        (originalUrl && resolveJobUrl(entry) === originalUrl)
+          ? merged
+          : entry
       )
       saveToStorage(STORAGE_KEYS.jobs, next)
       return next

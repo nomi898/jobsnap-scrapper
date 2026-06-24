@@ -11,10 +11,13 @@ import {
   PAGE_DELAY_MIN_MS,
   POST_BLOCK_PAGE_DELAY_MAX_MS,
   POST_BLOCK_PAGE_DELAY_MIN_MS,
+  POST_BLOCK_SCRAPE_RUN_COOLDOWN_EVERY,
   RATE_LIMIT_COOLDOWN_MAX_MS,
   RATE_LIMIT_COOLDOWN_MIN_MS,
   RATE_LIMITED_KEYWORD_RETRY_MAX_MS,
   RATE_LIMITED_KEYWORD_RETRY_MIN_MS,
+  AUTHWALL_KEYWORD_RETRY_MAX_MS,
+  AUTHWALL_KEYWORD_RETRY_MIN_MS,
   SAFETY_MAX_PAGES,
   SCRAPE_RUN_COOLDOWN_EVERY,
   SCRAPE_RUN_COOLDOWN_MAX_MS,
@@ -169,6 +172,17 @@ function randomBetween(min, max) {
   return min + Math.floor(Math.random() * (max - min + 1))
 }
 
+function shuffleKeywords(keywords) {
+  const shuffled = [...keywords]
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1))
+    const current = shuffled[index]
+    shuffled[index] = shuffled[swapIndex]
+    shuffled[swapIndex] = current
+  }
+  return shuffled
+}
+
 async function sleepWithCountdown(totalMs, signal, onTick) {
   const startedAt = Date.now()
   let remainingMs = totalMs
@@ -305,14 +319,15 @@ async function delayForRunCooldown({
 async function delayBeforeRateLimitedKeywordRetry({
   retryCount,
   retryKeywords,
+  hasAuthwall,
   accumulated,
   scrapeRunId,
   signal,
   onProgress,
 }) {
   const delayMs = randomBetween(
-    RATE_LIMITED_KEYWORD_RETRY_MIN_MS,
-    RATE_LIMITED_KEYWORD_RETRY_MAX_MS
+    hasAuthwall ? AUTHWALL_KEYWORD_RETRY_MIN_MS : RATE_LIMITED_KEYWORD_RETRY_MIN_MS,
+    hasAuthwall ? AUTHWALL_KEYWORD_RETRY_MAX_MS : RATE_LIMITED_KEYWORD_RETRY_MAX_MS
   )
 
   await sleepWithCountdown(delayMs, signal, (remainingSeconds) => {
@@ -323,6 +338,7 @@ async function delayBeforeRateLimitedKeywordRetry({
       phase: 'rate-limit-retry-delay',
       retryCount,
       retryKeywords,
+      hasAuthwall,
       remainingSeconds,
     })
   })
@@ -337,6 +353,10 @@ function buildScrapeError(status, data) {
   const error = new Error(formatScrapeError(status, data))
   error.status = status
   error.rateLimited = Boolean(data?.rateLimited)
+  error.authwallDetected = Boolean(
+    data?.meta?.rateLimitDiagnostics?.firstBlockedRequest?.authwallDetected ||
+      data?.meta?.searchMode?.fallbackReason === 'authwall'
+  )
   error.nextStartOffset =
     data?.nextStartOffset ?? data?.meta?.nextStartOffset ?? null
   return error
@@ -518,6 +538,10 @@ async function scrapeKeywordPage(
     addedCount,
     stoppedEarly: Boolean(keywordMeta?.stoppedEarly),
     rateLimited: Boolean(result.rateLimited || keywordMeta?.rateLimited),
+    authwallDetected: Boolean(
+      result.meta?.rateLimitDiagnostics?.firstBlockedRequest?.authwallDetected ||
+        keywordMeta?.searchMode?.fallbackReason === 'authwall'
+    ),
     exhausted: Boolean(keywordMeta?.exhausted),
   }
 }
@@ -541,6 +565,7 @@ async function fetchKeywordAllPages(
   let keywordMeta = null
   let hasMore = true
   let keywordRateLimited = false
+  let keywordAuthwallDetected = false
   let consecutiveEmptyMatchPages = 0
   let stoppedForEmptyMatches = false
   const warnings = []
@@ -577,7 +602,11 @@ async function fetchKeywordAllPages(
         const message = err instanceof Error ? err.message : 'Fetch failed'
         if (isRateLimitError(err)) {
           keywordRateLimited = true
+          keywordAuthwallDetected = Boolean(err.authwallDetected)
           runRateLimitRef.value = true
+          if (keywordAuthwallDetected) {
+            runRateLimitRef.authwallDetected = true
+          }
           const retryOffset =
             Number.isFinite(Number(err.nextStartOffset)) ?
               Number(err.nextStartOffset)
@@ -617,6 +646,10 @@ async function fetchKeywordAllPages(
       keywordRateLimited = true
       if (pageResult.rateLimited) {
         runRateLimitRef.value = true
+        keywordAuthwallDetected = Boolean(pageResult.authwallDetected)
+        if (keywordAuthwallDetected) {
+          runRateLimitRef.authwallDetected = true
+        }
       }
     }
 
@@ -646,9 +679,13 @@ async function fetchKeywordAllPages(
 
     if (hasMore) {
       const nextOffset = pageResult.nextOffset
+      const cooldownEvery =
+        runRateLimitRef.value ?
+          POST_BLOCK_SCRAPE_RUN_COOLDOWN_EVERY
+        : SCRAPE_RUN_COOLDOWN_EVERY
       if (
         runRequestRef.value > 0 &&
-        runRequestRef.value % SCRAPE_RUN_COOLDOWN_EVERY === 0
+        runRequestRef.value % cooldownEvery === 0
       ) {
         await delayForRunCooldown({
           runRequestCount: runRequestRef.value,
@@ -694,6 +731,7 @@ async function fetchKeywordAllPages(
     warnings,
     exhausted: pageCapReached ? false : (keywordExhausted ?? !hasMore),
     rateLimited: keywordRateLimited,
+    authwallDetected: keywordAuthwallDetected,
     retryOffset: keywordRateLimited ? startOffset : null,
     stoppedEarly: keywordRateLimited || pageCapReached || stoppedForEmptyMatches,
   }
@@ -710,7 +748,21 @@ async function finalizeFetchJobs(
 ) {
   let jobs = accumulated
 
-  if (settings.fetchCompanySize !== false && jobs.length > 0) {
+  if (
+    settings.fetchCompanySize !== false &&
+    jobs.length > 0 &&
+    !normalizeLiAtCookie(settings.liAtCookie)
+  ) {
+    warnings.push(
+      'Company size enrichment skipped. Add your li_at cookie in Settings to fetch company sizes.'
+    )
+  }
+
+  if (
+    settings.fetchCompanySize !== false &&
+    jobs.length > 0 &&
+    normalizeLiAtCookie(settings.liAtCookie)
+  ) {
     throwIfAborted(signal)
     onProgress?.({
       jobs: [...jobs],
@@ -755,7 +807,7 @@ async function finalizeFetchJobs(
 async function fetchJobsProgressively(
   settings,
   keywords,
-  { onProgress, scrapeRunId, signal } = {}
+  { onProgress, scrapeRunId, signal, originalKeywords = keywords } = {}
 ) {
   const keywordCount = keywords.length
   let accumulated = []
@@ -841,6 +893,7 @@ async function fetchJobsProgressively(
         previousKeyword,
         keywordIndex,
         retryOffset: keywordResult.retryOffset ?? 0,
+        authwallDetected: Boolean(keywordResult.authwallDetected),
       })
     } else {
       warnings.push(...keywordResult.warnings)
@@ -867,6 +920,7 @@ async function fetchJobsProgressively(
     await delayBeforeRateLimitedKeywordRetry({
       retryCount: rateLimitedRetries.length,
       retryKeywords: rateLimitedRetries.map((entry) => entry.keyword),
+      hasAuthwall: rateLimitedRetries.some((entry) => entry.authwallDetected),
       accumulated,
       scrapeRunId,
       signal,
@@ -906,7 +960,7 @@ async function fetchJobsProgressively(
 
       if (retryResult.rateLimited) {
         warnings.push(
-          `${retry.keyword}: still rate-limited after one delayed retry.`
+          `${retry.keyword}: still rate limited after one delayed retry.`
         )
       }
     }
@@ -915,7 +969,12 @@ async function fetchJobsProgressively(
   return finalizeFetchJobs(
     settings,
     accumulated,
-    combinedMeta,
+    {
+      ...(combinedMeta ?? {}),
+      keywords,
+      originalKeywordOrder: originalKeywords,
+      keywordOrderRandomized: keywords.join('\n') !== originalKeywords.join('\n'),
+    },
     warnings,
     allExhausted,
     onProgress,
@@ -940,18 +999,20 @@ export async function fetchJobsFromScraper(
 
   const scrapeRunId = createScrapeRunId()
   const useProgressive = Boolean(onProgress) && startPage === 1
+  const runKeywords = useProgressive ? shuffleKeywords(keywords) : keywords
   acquireScrapeRunLock(scrapeRunId)
 
   try {
     if (useProgressive) {
-      return await fetchJobsProgressively(settingsSnapshot, keywords, {
+      return await fetchJobsProgressively(settingsSnapshot, runKeywords, {
         onProgress,
         scrapeRunId,
         signal,
+        originalKeywords: keywords,
       })
     }
 
-    return await fetchKeywordBatch(settingsSnapshot, keywords, startPage, {
+    return await fetchKeywordBatch(settingsSnapshot, runKeywords, startPage, {
       scrapeRunId,
       signal,
     })
