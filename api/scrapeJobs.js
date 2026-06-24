@@ -87,6 +87,11 @@ function createRateLimitDiagnostics({ scrapeRunId, dateFilter } = {}) {
       const entry = {
         scrapeRunId,
         dateFilter,
+        selectedMode: context.selectedMode ?? 'auto',
+        actualMode: event.accessMode === LINKEDIN_ACCESS.session ? 'cookie' : 'guest',
+        cookieDetected: Boolean(context.cookieDetected),
+        authwallDetected: Boolean(event.blocked),
+        fallbackToGuest: Boolean(event.cookieRejected),
         requestNumber: event.globalRequestNumber ?? requestCount,
         runRequestNumber,
         keyword: context.keyword,
@@ -243,6 +248,7 @@ function buildResponse({
   rateLimitDiagnostics = null,
   scrapeRunId = null,
   dateFilter = 'all',
+  searchMode = null,
 }) {
   const deduped = dedupeJobs(jobs)
   const isRateLimited = rateLimited && deduped.length === 0
@@ -272,6 +278,7 @@ function buildResponse({
       cookieRejected,
       companyEnrichment,
       rateLimitDiagnostics,
+      searchMode,
     },
   }
 }
@@ -283,6 +290,7 @@ function mergeKeywordResult(
   pagesRequestedRef,
   accessModeRef,
   cookieRejectedRef,
+  searchModeRef,
   entry
 ) {
   allJobs.push(...entry.result.jobs)
@@ -294,6 +302,20 @@ function mergeKeywordResult(
   if (entry.result.cookieRejected) {
     cookieRejectedRef.value = true
   }
+  if (entry.result.selectedMode) {
+    searchModeRef.value = {
+      selectedMode: entry.result.selectedMode,
+      actualMode: entry.result.actualMode ?? searchModeRef.value.actualMode,
+      cookieDetected:
+        searchModeRef.value.cookieDetected || Boolean(entry.result.cookieDetected),
+      cookieValid:
+        searchModeRef.value.cookieValid || Boolean(entry.result.cookieValid),
+      fallbackToGuest:
+        searchModeRef.value.fallbackToGuest || Boolean(entry.result.fallbackToGuest),
+      fallbackReason:
+        entry.result.fallbackReason ?? searchModeRef.value.fallbackReason,
+    }
+  }
   keywordResults.push({
     keyword: entry.keyword,
     count: entry.result.jobs.length,
@@ -303,6 +325,8 @@ function mergeKeywordResult(
     stoppedEarly: Boolean(entry.result.stoppedEarly),
     nextOffset: entry.result.nextOffset ?? 0,
     titleFilteredCount: entry.result.titleFilteredCount ?? 0,
+    actualMode: entry.result.actualMode ?? null,
+    fallbackToGuest: Boolean(entry.result.fallbackToGuest),
   })
 }
 
@@ -358,6 +382,16 @@ export async function scrapeJobs({
   const accessModeRef = { value: LINKEDIN_ACCESS.guest }
   const sessionSourceRef = { value: session.source }
   const cookieRejectedRef = { value: false }
+  const searchModeRef = {
+    value: {
+      selectedMode: 'auto',
+      actualMode: resolvedCookie ? 'cookie' : 'guest',
+      cookieDetected: Boolean(resolvedCookie),
+      cookieValid: false,
+      fallbackToGuest: false,
+      fallbackReason: null,
+    },
+  }
   const diagnostics = createRateLimitDiagnostics({ scrapeRunId, dateFilter })
   let scrapeError = null
 
@@ -410,6 +444,7 @@ export async function scrapeJobs({
       pagesRequestedRef,
       accessModeRef,
       cookieRejectedRef,
+      searchModeRef,
       entry
     )
 
@@ -481,6 +516,7 @@ export async function scrapeJobs({
       rateLimitDiagnostics: diagnostics.summary(),
       scrapeRunId,
       dateFilter,
+      searchMode: searchModeRef.value,
     })
     response.hasMore = true
     return { status: 200, data: response }
@@ -511,6 +547,7 @@ export async function scrapeJobs({
           keywordResults,
           nextStartOffset: keywordResults[0]?.nextOffset ?? startOffset,
           rateLimitDiagnostics: diagnostics.summary(),
+          searchMode: searchModeRef.value,
         },
       },
     }
@@ -527,6 +564,8 @@ export async function scrapeJobs({
       exhausted: stored?.exhausted ?? false,
       stoppedEarly: stored?.stoppedEarly ?? false,
       nextOffset: stored?.nextOffset ?? 0,
+      actualMode: stored?.actualMode ?? null,
+      fallbackToGuest: Boolean(stored?.fallbackToGuest),
     }
   })
 
@@ -554,6 +593,7 @@ export async function scrapeJobs({
     rateLimitDiagnostics: diagnostics.summary(),
     scrapeRunId,
     dateFilter,
+    searchMode: searchModeRef.value,
   })
 
   response.hasMore = anyHasMore

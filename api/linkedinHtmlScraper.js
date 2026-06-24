@@ -139,14 +139,24 @@ export function buildSearchUrl({
   return url.href
 }
 
-async function fetchSearchPage(url, { diagnostics, requestContext } = {}) {
-  // jobs-guest search API is for anonymous access — li_at often breaks it
+async function fetchSearchPage(
+  url,
+  { liAtCookie, forceGuest = false, diagnostics, requestContext } = {}
+) {
+  const hasCookie = Boolean(liAtCookie)
   const page = await fetchLinkedInPage(url, {
+    liAtCookie,
     referer: 'https://www.linkedin.com/jobs/search/',
     timeoutMs: REQUEST_TIMEOUT_MS,
-    forceGuest: true,
+    fallbackToGuest: false,
+    forceGuest: forceGuest || !hasCookie,
     diagnostics,
-    requestContext,
+    requestContext: {
+      selectedMode: 'auto',
+      cookieDetected: hasCookie,
+      forceGuest,
+      ...requestContext,
+    },
   })
 
   if (page.error) {
@@ -155,6 +165,7 @@ async function fetchSearchPage(url, { diagnostics, requestContext } = {}) {
       status: 0,
       cookieRejected: false,
       accessMode: page.accessMode,
+      fallbackReason: page.fallbackReason ?? null,
     }
   }
 
@@ -163,6 +174,9 @@ async function fetchSearchPage(url, { diagnostics, requestContext } = {}) {
     status: page.status,
     cookieRejected: page.cookieRejected,
     accessMode: page.accessMode,
+    sessionSource: page.sessionSource,
+    usedCookie: page.usedCookie,
+    fallbackReason: page.fallbackReason ?? null,
   }
 }
 
@@ -174,9 +188,11 @@ function isFailedPage(html, status) {
 
 async function fetchSearchPageOnce(
   url,
-  { diagnostics, requestContext } = {}
+  { liAtCookie, forceGuest = false, diagnostics, requestContext } = {}
 ) {
   return fetchSearchPage(url, {
+    liAtCookie,
+    forceGuest,
     diagnostics,
     requestContext: {
       ...requestContext,
@@ -317,7 +333,10 @@ export async function scrapeKeywordPages({
   let pagesFetched = 0
   let hitEndOfResults = false
   let accessMode
+  let sessionSource = 'none'
   let cookieRejected = false
+  let fallbackReason = null
+  let forceGuestForSearch = false
   let offset = Math.max(0, Number(startOffset) || 0)
   let stoppedEarly = false
   let consecutiveEmptyPages = 0
@@ -339,6 +358,8 @@ export async function scrapeKeywordPages({
     try {
       const pageNumber = pageStartIndex + page
       const pageResult = await fetchSearchPageOnce(url, {
+        liAtCookie,
+        forceGuest: forceGuestForSearch,
         diagnostics,
         requestContext: {
           keyword,
@@ -350,7 +371,12 @@ export async function scrapeKeywordPages({
       html = pageResult.html
       status = pageResult.status
       accessMode = pageResult.accessMode ?? accessMode
+      sessionSource = pageResult.sessionSource ?? sessionSource
       cookieRejected = cookieRejected || Boolean(pageResult.cookieRejected)
+      fallbackReason = pageResult.fallbackReason ?? fallbackReason
+      if (pageResult.cookieRejected) {
+        forceGuestForSearch = true
+      }
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err)
       break
@@ -411,7 +437,14 @@ export async function scrapeKeywordPages({
     stoppedEarly,
     error: jobs.length === 0 ? lastError : null,
     accessMode,
+    sessionSource,
     cookieRejected,
+    selectedMode: 'auto',
+    actualMode: accessMode === 'session' ? 'cookie' : 'guest',
+    cookieDetected: Boolean(liAtCookie),
+    cookieValid: Boolean(liAtCookie && accessMode === 'session' && !cookieRejected),
+    fallbackToGuest: Boolean(cookieRejected),
+    fallbackReason,
   }
 }
 

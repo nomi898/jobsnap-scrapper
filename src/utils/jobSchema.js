@@ -204,11 +204,17 @@ export function mergeToApifyJob(job = {}, details = {}, company = {}) {
   const jsonLd = details.jsonLd ?? {}
   const descExtras = parseDescriptionExtras(details.description)
   const companySizeNum = sanitizeEmployeeCount(
-    company.companySize ?? job.companySizeCount ?? job.companySize
+    company.companySize ??
+      job.companySizeCount ??
+      job.companySize ??
+      details.companySizeLabel
   )
   const companySizeBand =
     job.companySizeBand ??
-    formatCompanySizeBand(companySizeNum, company.companySizeLabel)
+    formatCompanySizeBand(
+      companySizeNum,
+      company.companySizeLabel ?? details.companySizeLabel
+    )
 
   const city = job.city ?? jsonLd.city ?? parsedLocation.city
   const country = job.country ?? jsonLd.country ?? parsedLocation.country
@@ -248,9 +254,10 @@ export function mergeToApifyJob(job = {}, details = {}, company = {}) {
     postedAt: postedAt || job.postedDate || details.postedDate || null,
     expiresAt: details.expiresAt ?? jsonLd.expiresAt ?? job.expiresAt ?? null,
     applyUrl: cleanLinkedInUrl(details.applyUrl || job.url),
-    companyWebsite: company.website ?? job.companyWebsite ?? null,
+    companyWebsite: company.website ?? details.companyWebsite ?? job.companyWebsite ?? null,
     companyLogo: company.logo || details.companyLogo || job.companyLogo || null,
     companyLinkedIn: companyUrl || null,
+    companyPhone: company.phone ?? job.companyPhone ?? null,
     applicantCount: details.applicantCount ?? job.applicantCount ?? null,
     jobFunction: details.jobFunction ?? job.jobFunction ?? null,
     educationLevel: details.educationLevel ?? job.educationLevel ?? null,
@@ -269,9 +276,10 @@ export function mergeToApifyJob(job = {}, details = {}, company = {}) {
     descriptionHtml: details.descriptionHtml ?? job.descriptionHtml ?? null,
     detailsLoadedAt: job.detailsLoadedAt ?? new Date().toISOString(),
     companyDescription: company.description ?? job.companyDescription ?? null,
-    headquarters: company.headquarters ?? job.headquarters ?? null,
-    organizationType: company.organizationType ?? job.organizationType ?? null,
-    founded: company.founded ?? job.founded ?? null,
+    headquarters: company.headquarters ?? details.headquarters ?? job.headquarters ?? null,
+    organizationType:
+      company.organizationType ?? details.organizationType ?? job.organizationType ?? null,
+    founded: company.founded ?? details.founded ?? job.founded ?? null,
     specialties: company.specialties ?? job.specialties ?? null,
   }
 }

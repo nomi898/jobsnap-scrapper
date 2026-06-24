@@ -26,6 +26,18 @@ import {
   getLinkedInAccessLabel,
   normalizeLiAtCookie,
 } from '../utils/linkedinCookie'
+import { resolveJobUrl } from '../utils/cleanJobFields'
+
+function getJobIdentities(job) {
+  return [job?.id, resolveJobUrl(job), job?.url]
+    .map((value) => String(value ?? '').trim())
+    .filter(Boolean)
+}
+
+function jobsMatch(a, b) {
+  const aKeys = new Set(getJobIdentities(a))
+  return getJobIdentities(b).some((key) => aKeys.has(key))
+}
 
 function formatFetchProgress(progress, jobsLength = 0) {
   if (!progress) return 'Fetching…'
@@ -69,18 +81,19 @@ function formatFetchProgress(progress, jobsLength = 0) {
     const names =
       Array.isArray(progress.retryKeywords) && progress.retryKeywords.length > 0
         ? progress.retryKeywords.join(', ')
-        : `${count} rate-limited keyword${count === 1 ? '' : 's'}`
+        : `${count} rate limited keyword${count === 1 ? '' : 's'}`
+    const reason = progress.hasAuthwall ? ' after authwall cooldown' : ''
     if (progress.remainingSeconds != null) {
-      return `Retrying ${names} in ${progress.remainingSeconds}s`
+      return `Retrying ${names}${reason} in ${progress.remainingSeconds}s`
     }
-    return `Preparing to retry ${names}…`
+    return `Preparing to retry ${names}${reason}…`
   }
   if (progress.phase === 'retrying-rate-limited-keyword') {
     const prefix =
       progress.keywordCount > 1
         ? `Keyword ${progress.keywordIndex}/${progress.keywordCount}: `
         : ''
-    return `${prefix}Retrying ${progress.currentKeyword ?? 'rate-limited keyword'} after cooldown…`
+    return `${prefix}Retrying ${progress.currentKeyword ?? 'rate limited keyword'} after cooldown…`
   }
   if (progress.phase === 'page-delay') {
     const page = progress.pageIndex ? `page ${progress.pageIndex + 1}` : 'next page'
@@ -359,7 +372,7 @@ export default function Dashboard() {
         fetchMeta?.rateLimitedPages > 0 &&
         enrichedJobs.length > 0 && (
           <div className="banner banner-warning">
-            LinkedIn rate-limited part of the search ({fetchMeta.rateLimitedPages}{' '}
+            LinkedIn rate limited part of the search ({fetchMeta.rateLimitedPages}{' '}
             page(s)). Showing {enrichedJobs.length} jobs — wait 15–30 minutes
             and fetch again for more.
           </div>
@@ -476,7 +489,7 @@ export default function Dashboard() {
             <JobDetailModal
               key={selectedJob.id || selectedJob.url}
               job={
-                jobs.find((entry) => entry.id === selectedJob.id) || selectedJob
+                jobs.find((entry) => jobsMatch(entry, selectedJob)) || selectedJob
               }
               settings={settings}
               onClose={() => setSelectedJob(null)}

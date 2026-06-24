@@ -14,6 +14,8 @@ import {
 } from './jobSchema.js'
 import { sanitizeEmployeeCount } from './companySize.js'
 
+export const DETAILS_SCHEMA_VERSION = 2
+
 const APIFY_FIELDS = [
   'companyId',
   'companySize',
@@ -38,12 +40,14 @@ const APIFY_FIELDS = [
   'companyWebsite',
   'companyLogo',
   'companyLinkedIn',
+  'companyPhone',
   'applicantCount',
   'jobFunction',
   'educationLevel',
   'visaSponsorship',
   'recruiterName',
   'detailsLoadedAt',
+  'detailsSchemaVersion',
   'companyDescription',
   'headquarters',
   'organizationType',
@@ -156,5 +160,6 @@ export function mergeJobWithFetchedDetails(job, details, company) {
     workType: job.workType ?? merged.workType,
     postedDate: job.postedDate || merged.postedDate,
     detailsLoadedAt: new Date().toISOString(),
+    detailsSchemaVersion: DETAILS_SCHEMA_VERSION,
   })
 }
